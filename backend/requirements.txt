@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+sqlalchemy
+pymysql
+requests
+python-dotenv
+email-validator
+APScheduler
+cryptography
+phonenumbers

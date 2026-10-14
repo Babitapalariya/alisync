@@ -1,0 +1,14 @@
+backend/.env
+**/__pycache__/
+*.pyc
+.env
+.env.*
+*.db
+*.sqlite
+__pycache__/
+*.pyc
+venv/
+.venv/
+node_modules/
+.DS_Storedatabase/
+database/
