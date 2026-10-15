@@ -1714,6 +1714,13 @@ function markMappingVariantPriceEdited(input) {
 
 
 
+  function shopifyProductUrl(productId, shopId = activeShopId) {
+    const shop = tenantShops.find(item => String(item.id) === String(shopId));
+    const domain = String(shop?.shop_domain || '').trim().toLowerCase();
+    if (!productId || !/^[a-z0-9][a-z0-9-]*\.myshopify\.com$/.test(domain)) return '';
+    return `https://${domain}/admin/products/${encodeURIComponent(productId)}`;
+  }
+
   function fullRow(p) {
     const title  = p.title || "—";
     const price  = p.price || "—";
@@ -1768,7 +1775,7 @@ function markMappingVariantPriceEdited(input) {
         <button class="btn btn-primary btn-icon sm" title="Increase Price" onclick="openIncreasePriceModalImported(${p.id})"><i class="ti ti-plus" style="font-size:13px"></i></button>
         <button class="btn btn-primary btn-icon sm" title="Edit" onclick='openModal(${pj})'><i class="ti ti-edit" style="font-size:13px"></i></button>
         <button class="btn btn-icon sm" title="Remap to new AliExpress ID" aria-label="Remap to new AliExpress ID" onclick="openRemapModal(${p.id}, '${p.aliexpress_id}')"><i class="ti ti-arrows-exchange" style="font-size:13px"></i></button>
-        ${p.shopify_product_id ? `<a href="https://admin.shopify.com/products/${p.shopify_product_id}" target="_blank"><button class="btn btn-icon sm" title="View in Shopify"><i class="ti ti-external-link" style="font-size:13px"></i></button></a>` : ""}
+        ${shopifyProductUrl(p.shopify_product_id, p.shop_id || activeShopId) ? `<a href="${shopifyProductUrl(p.shopify_product_id, p.shop_id || activeShopId)}" target="_blank"><button class="btn btn-icon sm" title="View in Shopify"><i class="ti ti-external-link" style="font-size:13px"></i></button></a>` : ""}
         <button class="btn btn-icon sm" style="color:var(--red)" onclick="delProduct(${p.id})"><i class="ti ti-trash" style="font-size:13px"></i></button>
       </div></td>
     </tr>`;
@@ -2395,7 +2402,7 @@ async function syncInventoryFromModal() {
           ${m.price_mode==='manual'?`<button class="btn btn-warn btn-sm" onclick="resetMappingMode(${m.id})"><i class="ti ti-rotate"></i> Reset</button>`:""}
           <button class="btn btn-icon sm" title="Check listing status" onclick="checkMappingListingStatus(${m.id}, '${escapeHtml(m.aliexpress_id)}')"><i class="ti ti-radar" style="font-size:13px"></i></button>
           <button class="btn btn-icon sm" title="Remap to new AliExpress ID" aria-label="Remap to new AliExpress ID" onclick="openMappingRemapModal(${m.id}, '${escapeHtml(m.aliexpress_id)}')"><i class="ti ti-arrows-exchange" style="font-size:13px"></i></button>
-          ${m.shopify_product_id?`<a href="https://admin.shopify.com/products/${m.shopify_product_id}" target="_blank"><button class="btn btn-icon sm" title="View in Shopify"><i class="ti ti-external-link" style="font-size:13px"></i></button></a>`:""}
+          ${shopifyProductUrl(m.shopify_product_id, m.shop_id || activeShopId)?`<a href="${shopifyProductUrl(m.shopify_product_id, m.shop_id || activeShopId)}" target="_blank"><button class="btn btn-icon sm" title="View in Shopify"><i class="ti ti-external-link" style="font-size:13px"></i></button></a>`:""}
            <button class="btn btn-icon sm" onclick="toggleTrackMapping(${m.id})"><i class="ti ti-toggle"></i></button>
           <button class="btn btn-icon sm" style="color:var(--red)" onclick="deleteMapping(${m.id})"><i class="ti ti-trash"></i></button>
         </td>
@@ -3609,6 +3616,7 @@ function refreshCurrentSearch() {
     else {showAuthView("login");tenantMessage("tenant-auth-message",googleError);}
   }
   if(tenantToken)loadTenantShops();
+
 </script>
 </body>
 </html>

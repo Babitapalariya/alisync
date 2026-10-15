@@ -229,7 +229,7 @@ def _notify_supplier_state(db: Session, shop: Shop, entity_type: str, entity) ->
         merchant_action_required=status in {"confirmed_dead", "supplier_unavailable"},
         action_label="Relink Supplier" if status == "confirmed_dead" else "Review",
         action_url="dead-listings", supplier_url=f"https://www.aliexpress.com/item/{entity.aliexpress_id}.html",
-        shopify_url=(f"https://admin.shopify.com/products/{entity.shopify_product_id}" if entity.shopify_product_id else None),
+        shopify_url=(f"https://{shop.shop_domain}/admin/products/{entity.shopify_product_id}" if entity.shopify_product_id else None),
         dedupe_key=f"supplier:{entity_type}:{entity.id}:{status}")
 
 
@@ -267,7 +267,7 @@ def _notify_product_changes(db: Session, shop: Shop, product, new_skus: list[dic
     base = dict(user_id=shop.user_id, shop_id=shop.id, entity_type="product", entity_id=str(product.id),
                 product_name=name, product_image=product.main_image, action_label="View Product", action_url="products",
                 supplier_url=f"https://www.aliexpress.com/item/{product.aliexpress_id}.html",
-                shopify_url=(f"https://admin.shopify.com/products/{product.shopify_product_id}"
+                shopify_url=(f"https://{shop.shop_domain}/admin/products/{product.shopify_product_id}"
                              if product.shopify_product_id else None))
     pause_price_update = False
     if price_changes:
@@ -1489,7 +1489,7 @@ def get_dead_listings(db: Session = Depends(get_db), shop: Shop = Depends(get_cu
         "id": p.id, "aliexpress_id": p.aliexpress_id, "replacement_aliexpress_id": p.replacement_aliexpress_id,
         "title": p.custom_title or p.original_title, "main_image": p.main_image,
         "shopify_product_id": p.shopify_product_id,
-        "shopify_url": f"https://admin.shopify.com/products/{p.shopify_product_id}" if p.shopify_product_id else None,
+        "shopify_url": f"https://{shop.shop_domain}/admin/products/{p.shopify_product_id}" if p.shopify_product_id else None,
         "aliexpress_url": f"https://www.aliexpress.com/item/{p.aliexpress_id}.html",
         "imported_at": p.imported_at.isoformat() if p.imported_at else None,
         "is_still_dead": p.is_dead_listing,
@@ -1934,7 +1934,7 @@ def get_dead_mappings(db: Session = Depends(get_db), shop: Shop = Depends(get_cu
     return {"count": len(mappings), "mappings": [{
         "id": m.id, "aliexpress_id": m.aliexpress_id, "shopify_product_id": m.shopify_product_id,
         "title": m.shopify_product_title,
-        "shopify_url": f"https://admin.shopify.com/products/{m.shopify_product_id}" if m.shopify_product_id else None,
+        "shopify_url": f"https://{shop.shop_domain}/admin/products/{m.shopify_product_id}" if m.shopify_product_id else None,
         "aliexpress_url": f"https://www.aliexpress.com/item/{m.aliexpress_id}.html",
         "created_at": m.created_at.isoformat() if m.created_at else None,
     } for m in mappings]}
@@ -2647,7 +2647,7 @@ def lookup_product(q: str = Query(..., description="AliExpress ID (old or new), 
                 "shopify_product_id": p.shopify_product_id, "shopify_status": p.shopify_status,
                 "is_dead_listing": p.is_dead_listing, "imported_at": p.imported_at.isoformat() if p.imported_at else None,
                 "match_reason": reason, "aliexpress_url": f"https://www.aliexpress.com/item/{p.aliexpress_id}.html",
-                "shopify_url": f"https://admin.shopify.com/products/{p.shopify_product_id}" if p.shopify_product_id else None,
+                "shopify_url": f"https://{shop.shop_domain}/admin/products/{p.shopify_product_id}" if p.shopify_product_id else None,
                 "avg_rating": p.custom_rating or p.avg_rating, "rating": p.custom_rating or p.avg_rating,
                 "sku_count": p.sku_count, "track_price": p.track_price, "price_mode": p.price_mode,
                 "price_increase": p.price_increase, "price_percentage": p.price_percentage, "store_name": p.store_name,
@@ -2668,7 +2668,7 @@ def lookup_product(q: str = Query(..., description="AliExpress ID (old or new), 
                 "price": None, "currency": None, "shopify_product_id": m.shopify_product_id, "shopify_status": None,
                 "is_dead_listing": m.is_dead_listing, "imported_at": m.created_at.isoformat() if m.created_at else None,
                 "match_reason": reason, "aliexpress_url": f"https://www.aliexpress.com/item/{m.aliexpress_id}.html",
-                "shopify_url": f"https://admin.shopify.com/products/{m.shopify_product_id}" if m.shopify_product_id else None,
+                "shopify_url": f"https://{shop.shop_domain}/admin/products/{m.shopify_product_id}" if m.shopify_product_id else None,
             })
 
         base_ip = db.query(ImportedProduct).filter(ImportedProduct.shop_id == shop.id)
