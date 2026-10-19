@@ -7,12 +7,13 @@ Do not expose the secret in frontend code or Shopify URL fields.
 
 The same handler accepts all three topics at either URL:
 
-- https://alisync.retradviews.com/app/webhooks/shopify/privacy
 - https://alisync.retradviews.com/api/webhooks/shopify/privacy
 
-Use the /app/ URL if your reverse proxy already forwards /app/ to FastAPI.
-Ensure the selected path forwards POST requests and the original body/headers
-to the backend, not the frontend HTML server. A browser GET is not a webhook test.
+Use the /api/ URL on the current production host. Verified on 2026-10-17:
+an invalid-signature POST to /api/webhooks/shopify/privacy returns HTTP 401 JSON.
+The /app/webhooks/shopify/privacy URL instead returns HTTP 200 dashboard HTML
+from the frontend fallback and must not be registered with Shopify.
+A browser GET is not a webhook test.
 
 Merge the following into the public app's existing shopify.app.toml. This is a
 configuration fragment, not a complete app configuration. No Shopify CLI app
@@ -24,7 +25,7 @@ api_version = "2026-10"
 
 [[webhooks.subscriptions]]
 compliance_topics = ["customers/data_request", "customers/redact", "shop/redact"]
-uri = "https://alisync.retradviews.com/app/webhooks/shopify/privacy"
+uri = "https://alisync.retradviews.com/api/webhooks/shopify/privacy"
 ```
 
 Do not duplicate an existing [webhooks] section. Release this configuration for
@@ -51,3 +52,4 @@ registering subscriptions, rerun Shopify's automated review checks. Local tests
 do not confirm proxy routing, live credentials, or Shopify registration.
 
 Reference: https://shopify.dev/docs/apps/build/compliance/privacy-law-compliance
+
