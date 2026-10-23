@@ -8,3 +8,4 @@ email-validator
 APScheduler
 cryptography
 phonenumbers
+PyJWT>=2.10.1,<3

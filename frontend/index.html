@@ -2,6 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="shopify-api-key" content="709747a001a04e3869b20b70574ccd10">
+<meta name="shopify-disabled-features" content="fetch">
+<script src="https://cdn.shopify.com/shopifycloud/app-bridge.js"></script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AliSync — Multi-Store Dashboard</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -982,11 +985,17 @@
   let connectionOnboardingActive=false;
   let tenantSelectedPlan=null;
   const nativeFetch=window.fetch.bind(window);
-  window.fetch=(input,options={})=>{
+  const shopifyEmbedded = new URLSearchParams(location.search).get("embedded") === "1" && window.self !== window.top;
+  async function embeddedToken(){
+    if(!window.shopify?.idToken)throw new Error("Shopify App Bridge could not load. Reopen AliSync from Shopify Admin.");
+    return window.shopify.idToken();
+  }
+  window.fetch=async(input,options={})=>{
     const url=typeof input==="string"?input:input.url;
     if(url.startsWith(API)){
       options={...options,headers:new Headers(options.headers||(typeof input!=="string"?input.headers:undefined)||{})};
       if(tenantToken)options.headers.set("Authorization","Bearer "+tenantToken);
+      if(shopifyEmbedded)options.headers.set("X-Shopify-Session-Token",await embeddedToken());
       if(activeShopId)options.headers.set("X-Shop-ID",activeShopId);
     }
     return nativeFetch(input,options).then(response=>{if(response.status===401&&tenantToken&&!url.includes("/auth/"))tenantLogout(false);return response});
@@ -3616,7 +3625,18 @@ function refreshCurrentSearch() {
     if(googleToken){tenantToken=googleToken;sessionStorage.setItem("alisync_token",tenantToken);}
     else {showAuthView("login");tenantMessage("tenant-auth-message",googleError);}
   }
-  if(tenantToken)loadTenantShops();
+  async function initializeAppSession(){
+    if(shopifyEmbedded){
+      try{
+        const sessionUrl=["localhost","127.0.0.1"].includes(location.hostname)
+          ? API+"/auth/shopify-session" : location.origin+"/api/auth/shopify-session";
+        const response=await nativeFetch(sessionUrl,{headers:{Authorization:"Bearer "+await embeddedToken()}});
+        if(!response.ok)throw new Error("Shopify session verification failed. Reopen AliSync from Shopify Admin.");
+      }catch(error){tenantMessage("tenant-auth-message",error.message);return;}
+    }
+    if(tenantToken)await loadTenantShops();
+  }
+  initializeAppSession();
 
 </script>
 </body>

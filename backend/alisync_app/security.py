@@ -6,7 +6,7 @@ import os
 import time
 from cryptography.fernet import Fernet, InvalidToken
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Header
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
@@ -76,11 +76,21 @@ def decode_token(token: str) -> int:
         raise HTTPException(401, "Invalid or expired AliSync session")
 
 
-def current_user(credentials: HTTPAuthorizationCredentials = Depends(bearer), db: Session = Depends(get_db)) -> User:
+def current_user(credentials: HTTPAuthorizationCredentials = Depends(bearer), db: Session = Depends(get_db),
+                 shopify_session_token: str | None = Header(default=None, alias="X-Shopify-Session-Token")) -> User:
     if not credentials:
         raise HTTPException(401, "Authentication required")
     user = db.query(User).filter(User.id == decode_token(credentials.credentials), User.is_active == True).first()
     if not user:
         raise HTTPException(401, "User account is unavailable")
+    if isinstance(shopify_session_token, str):
+        from .shopify_session import verify_shopify_session
+        from .models import Shop
+        session = verify_shopify_session(shopify_session_token)
+        shop = db.query(Shop).filter(Shop.user_id == user.id,
+            Shop.shop_domain == session["shop_domain"], Shop.is_active == True).first()
+        if not shop:
+            raise HTTPException(403, "This Shopify store is not linked to your AliSync account. Link it from the standalone dashboard first.")
+        db.info["shopify_session_domain"] = session["shop_domain"]
     db.info["user_id"] = user.id
     return user

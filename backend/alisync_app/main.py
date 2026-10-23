@@ -13,6 +13,7 @@ from .operations import api as operations_router, lifespan
 from .schema_migrations import add_missing_columns
 from .notification_routes import router as notification_router
 from .shopify_webhooks import router as shopify_webhook_router
+from .shopify_session import router as shopify_session_router
 
 Base.metadata.create_all(bind=engine, checkfirst=True)
 add_missing_columns()
@@ -69,3 +70,4 @@ app.include_router(operations_router, prefix="/app", tags=["AliSync Operations"]
 app.include_router(router)
 app.include_router(notification_router)
 app.include_router(shopify_webhook_router)
+app.include_router(shopify_session_router)
