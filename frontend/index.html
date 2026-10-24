@@ -990,6 +990,25 @@
     if(!window.shopify?.idToken)throw new Error("Shopify App Bridge could not load. Reopen AliSync from Shopify Admin.");
     return window.shopify.idToken();
   }
+  let embeddedConnectionPending=null;
+  async function connectEmbeddedShop(){
+    if(!tenantToken)throw new Error("Sign in to your AliSync account first.");
+    if(embeddedConnectionPending)return embeddedConnectionPending;
+    embeddedConnectionPending=(async()=>{
+      const url=["localhost","127.0.0.1"].includes(location.hostname)
+        ? API+"/auth/shopify-connect" : location.origin+"/api/auth/shopify-connect";
+      const response=await nativeFetch(url,{method:"POST",headers:{
+        Authorization:"Bearer "+tenantToken,"X-Shopify-Session-Token":await embeddedToken()
+      }});
+      const data=await response.json().catch(()=>({}));
+      if(!response.ok)throw new Error(data.detail||"Shopify connection failed. Please reopen the app and retry.");
+      if(activeShopId!==String(data.shop_id))clearMappingView();
+      activeShopId=String(data.shop_id);
+      sessionStorage.setItem("alisync_shop_id",activeShopId);
+      return data;
+    })();
+    try{return await embeddedConnectionPending;}finally{embeddedConnectionPending=null;}
+  }
   window.fetch=async(input,options={})=>{
     const url=typeof input==="string"?input:input.url;
     if(url.startsWith(API)){
@@ -1140,6 +1159,10 @@
     catch(e){showToast("Could not select plan: "+e.message,"err")}
   }
   async function loadTenantShops(){
+    if(shopifyEmbedded){
+      try{await connectEmbeddedShop();}
+      catch(error){document.getElementById("tenant-gate").style.display="flex";tenantMessage("tenant-auth-message",error.message);return;}
+    }
     try{const me=await tenantJson("/auth/me");if(!me.email_verified){tenantToken="";sessionStorage.removeItem("alisync_token");document.getElementById("tenant-gate").style.display="flex";showVerification(me.email);return}tenantSelectedPlan=me.selected_plan||null;await loadSubscription();tenantShops=await tenantJson("/shops");if(!tenantShops.some(shop=>String(shop.id)===activeShopId)){activeShopId="";sessionStorage.removeItem("alisync_shop_id");clearMappingView()}document.querySelector(".sb-uname").textContent=me.full_name||me.email;document.querySelector(".sb-urole").textContent=tenantSelectedPlan?`${tenantSelectedPlan.charAt(0).toUpperCase()+tenantSelectedPlan.slice(1)} plan`:"Account setup";if(!activeShopId&&tenantShops.length===1){activeShopId=String(tenantShops[0].id);sessionStorage.setItem("alisync_shop_id",activeShopId)}renderShopSelectors();enterAdminWithoutConnections()}
     catch(e){tenantToken="";sessionStorage.removeItem("alisync_token");document.getElementById("pg-plans").classList.remove("active");document.getElementById("tenant-gate").style.display="flex";document.getElementById("account-panel").style.display="block";document.getElementById("shop-panel").style.display="none";showAuthView("login");tenantMessage("tenant-auth-message",e.message)}
   }
@@ -1185,10 +1208,16 @@
   }
 
   async function connectShopifyFromDashboard(){
+    if(shopifyEmbedded){
+      try{await connectEmbeddedShop();await loadTenantShops();showToast("Shopify connected","ok");}
+      catch(error){showToast(error.message,"err");}
+      return;
+    }
     if(connectionStatus?.shopify?.connected)return closeShopifyCredentials();
     openShopifyCredentials();
   }
   function openShopifyCredentials(){
+    if(shopifyEmbedded){connectShopifyFromDashboard();return;}
     const shop=tenantShops.find(item=>String(item.id)===String(activeShopId));document.getElementById("shopify-credential-domain").value=shop?.shop_domain||"";document.getElementById("shopify-credential-id").value="";document.getElementById("shopify-credential-secret").value="";document.getElementById("shopify-credential-error").textContent="";const btn=document.getElementById("save-shopify-credentials");btn.disabled=false;btn.innerHTML=`<i class="ti ti-plug-connected"></i> Save & Authenticate`;document.getElementById("shopify-credentials-modal").classList.add("open")
   }
   function closeShopifyCredentials(){document.getElementById("shopify-credentials-modal").classList.remove("open")}

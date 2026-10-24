@@ -14,6 +14,9 @@ from .shopify_auth import shopify_token_error
 
 def ensure_shopify_access_token(shop: Shop, db: Session) -> Shop:
     """Refresh expiring client-credentials tokens before Shopify API calls."""
+    if shop.shopify_auth_method == "token_exchange":
+        from .shopify_exchange import refresh_offline_token
+        return refresh_offline_token(shop, db)
     if not shop.shopify_client_id or not shop.shopify_client_secret_encrypted:
         return shop
 

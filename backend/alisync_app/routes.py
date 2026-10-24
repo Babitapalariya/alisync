@@ -507,6 +507,9 @@ def save_shopify_credentials(shop_id: int, payload: ShopifyCredentialRequest,
     # Changing credentials invalidates the token previously issued for another app.
     shop.access_token = None
     shop.access_token_expires_at = None
+    shop.shopify_auth_method = "client_credentials"
+    shop.shopify_refresh_token_encrypted = None
+    shop.shopify_refresh_token_expires_at = None
     db.commit()
     return {"message": "Shopify credentials saved", "shop_id": shop.id,
             "client_id_hint": "***" + shop.shopify_client_id[-4:]}
