@@ -1942,7 +1942,7 @@ async function syncProductPrice(productId){
     document.getElementById("pcard-grid").innerHTML=ids.map(id=>skelCard(id)).join("");
     let ok=0,fail=0;
     await Promise.all(ids.map(async id=>{
-      try{const r=await fetch(`${API}/product/${id}`);if(!r.ok){const b=await r.json().catch(()=>({}));const detail=typeof b?.detail==='string'?b.detail:(b?.detail?.message||b?.message||`HTTP ${r.status}`);throw new Error(detail);}fp[id].data=await r.json();fp[id].status="ready";ok++;}
+      try{const r=await fetch(`${API}/product/${id}`);if(!r.ok){const b=await r.json().catch(()=>({}));const detail=typeof b?.detail==='string'?b.detail:(b?.detail?.message||b?.detail?.aliexpress_message||b?.message||`HTTP ${r.status}`);throw new Error(detail);}fp[id].data=await r.json();fp[id].status="ready";ok++;}
       catch(e){fp[id].status="ferr";fp[id].err=e.message;fail++;}
       drawCard(id);
     }));
@@ -1954,7 +1954,7 @@ async function syncProductPrice(productId){
   function drawCard(id){
     const p=fp[id], el=document.getElementById("fc-"+id);
     if(!el) return;
-    if(p.status==="ferr"){el.innerHTML=`<div class="pc-body" style="padding:16px"><div class="badge b-red" style="margin-bottom:8px"><i class="ti ti-alert-circle"></i> Fetch failed</div><div style="font-size:11px;color:var(--t3);font-family:var(--mono)">${p.id}</div><div style="font-size:11px;color:var(--red);margin-top:6px">${p.err||""}</div></div>`;return;}
+    if(p.status==="ferr"){el.innerHTML=`<div class="pc-body" style="padding:16px"><div class="badge b-red" style="margin-bottom:8px"><i class="ti ti-alert-circle"></i> Fetch failed</div><div style="font-size:11px;color:var(--t3);font-family:var(--mono)">${escapeHtml(p.id)}</div><div style="font-size:11px;color:var(--red);margin-top:6px">${escapeHtml(p.err||"")}</div></div>`;return;}
     const d=p.data;
     const img=d.main_image?`<img src="${d.main_image}" onerror="this.parentNode.innerHTML='<i class=\\'ti ti-photo\\'></i>'" style="width:100%;height:100%;object-fit:cover;display:block">`:`<i class="ti ti-photo"></i>`;
     const cur=d.currency||"USD", price=d.sale_price||d.original_price||"—";

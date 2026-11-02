@@ -83,10 +83,12 @@ def _check_error(body: dict):
         return
     if "error_response" in body:
         err = body["error_response"]
+        message = err.get("sub_msg") or err.get("msg") or err.get("message") or "Product lookup was rejected"
+        code = err.get("sub_code") or err.get("code", "")
         raise HTTPException(status_code=400, detail={
-            "aliexpress_error_code": err.get("code", ""),
-            "aliexpress_message":    err.get("msg") or err.get("message", ""),
-            "raw": body,
+            "message": f"AliExpress: {message}" + (f" (code {code})" if code else ""),
+            "aliexpress_error_code": code,
+            "aliexpress_message": message,
         })
 
 
