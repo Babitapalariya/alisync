@@ -45,7 +45,7 @@ def shopify_session(authorization: str | None = Header(default=None)):
 @router.post("/api/auth/shopify-connect")
 @router.post("/app/auth/shopify-connect")
 def connect_shopify(shopify_token: str = Header(alias="X-Shopify-Session-Token"),
-                    user: User = Depends(account_user), db: Session = Depends(get_db)):
+                    user: User = Depends(account_user), db: Session = Depends(get_db), force: bool = False):
     # Require both account ownership and a valid Shopify session. Never accept
     # a caller-supplied shop domain, client ID, or client secret.
     session = verify_shopify_session(shopify_token)
@@ -59,7 +59,7 @@ def connect_shopify(shopify_token: str = Header(alias="X-Shopify-Session-Token")
             shop = Shop(user_id=user.id, shop_domain=domain)
             db.add(shop)
             db.flush()
-        if shop.shopify_auth_method == "token_exchange" and shop.is_active and shop.access_token and is_fresh(shop.access_token_expires_at):
+        if not force and shop.shopify_auth_method == "token_exchange" and shop.is_active and shop.access_token and is_fresh(shop.access_token_expires_at):
             pass
         else:
             exchange_token(shop, shopify_token)

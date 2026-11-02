@@ -991,13 +991,13 @@
     return window.shopify.idToken();
   }
   let embeddedConnectionPending=null;
-  async function connectEmbeddedShop(){
+  async function connectEmbeddedShop(force=false){
     if(!tenantToken)throw new Error("Sign in to your AliSync account first.");
     if(embeddedConnectionPending)return embeddedConnectionPending;
     embeddedConnectionPending=(async()=>{
       const url=["localhost","127.0.0.1"].includes(location.hostname)
         ? API+"/auth/shopify-connect" : location.origin+"/api/auth/shopify-connect";
-      const response=await nativeFetch(url,{method:"POST",headers:{
+      const response=await nativeFetch(url+(force?'?force=true':''),{method:"POST",headers:{
         Authorization:"Bearer "+tenantToken,"X-Shopify-Session-Token":await embeddedToken()
       }});
       const data=await response.json().catch(()=>({}));
@@ -1206,24 +1206,26 @@
       continueBtn.disabled=!status.ready;
       shopBtn.innerHTML=shop.connected?`<i class="ti ti-circle-check"></i> Shopify Connected`:`<i class="ti ti-brand-shopify"></i> Authenticate Shopify`;shopBtn.className=`btn btn-sm ${shop.connected?"btn-success":""}`;
       aliBtn.innerHTML=ali.connected?`<i class="ti ti-circle-check"></i> AliExpress Connected`:`<i class="ti ti-link"></i> Authenticate AliExpress`;aliBtn.className=`btn btn-sm ${ali.connected?"btn-success":"btn-warn"}`;
-      shopBtn.disabled=shop.connected;aliBtn.disabled=ali.connected;
+      shopBtn.disabled=false;aliBtn.disabled=false;
+      if(shop.connected)shopBtn.innerHTML='<i class="ti ti-refresh"></i> Reconnect Shopify';
+      if(ali.connected)aliBtn.innerHTML='<i class="ti ti-refresh"></i> Reconnect AliExpress';
+      onboardingShopBtn.disabled=false;onboardingAliBtn.disabled=false;
+      if(shop.connected)onboardingShopBtn.innerHTML='<i class="ti ti-refresh"></i> Reconnect Shopify';
+      if(ali.connected)onboardingAliBtn.innerHTML='<i class="ti ti-refresh"></i> Reconnect AliExpress';
       summary.textContent=status.ready?`Authentication complete${shop.shop_domain?` for ${shop.shop_domain}`:""}.`:`Authentication pending — ${!shop.connected?"connect Shopify":""}${!shop.connected&&!ali.connected?" and ":""}${!ali.connected?"connect AliExpress":""}.`;
       const banner=document.getElementById("connection-banner");banner.style.background=status.ready?"var(--green-bg)":"var(--orange-bg)";banner.style.borderColor=status.ready?"var(--green-border)":"var(--orange-border)";
       document.getElementById("connection-onboarding").style.display=connectionOnboardingActive?"flex":"none";
       if(status.ready&&tenantSelectedPlan){if(connectionOnboardingActive){continueToDashboard()}else{loadStats();loadRecent()}}
-      if(shop.connected)closeShopifyCredentials();
-      if(ali.connected)closeAliExpressCredentials();
 
     }catch(e){summary.textContent="Unable to load authentication status: "+e.message}
   }
 
   async function connectShopifyFromDashboard(){
     if(shopifyEmbedded){
-      try{await connectEmbeddedShop();await loadTenantShops();showToast("Shopify connected","ok");}
+      try{await connectEmbeddedShop(true);await loadTenantShops();showToast("Shopify reconnected","ok");}
       catch(error){showToast(error.message,"err");}
       return;
     }
-    if(connectionStatus?.shopify?.connected)return closeShopifyCredentials();
     openShopifyCredentials();
   }
   function openShopifyCredentials(){
@@ -1239,13 +1241,28 @@
   }
 
   async function connectAliExpressFromDashboard(){
-    if(connectionStatus?.aliexpress?.connected)return closeAliExpressCredentials();
     openAliExpressCredentials();
+    if(!connectionStatus?.aliexpress?.credentials_configured)return;
+    const authWindow=window.open('about:blank','_blank');
+    const button=document.getElementById('save-ali-credentials');
+    button.disabled=true;
+    try{
+      const data=await tenantJson('/login');
+      if(!data.auth_url)throw new Error('AliExpress login URL was not returned');
+      if(!authWindow)throw new Error('Allow popups for AliSync, then click Reconnect AliExpress again.');
+      authWindow.location=data.auth_url;
+      document.getElementById('ali-code-step').style.display='block';
+      button.textContent='Authorization opened';
+      showToast('Authorize AliExpress in the new tab. If given a code, paste it here.','info');
+    }catch(error){
+      if(authWindow)authWindow.close();
+      document.getElementById('ali-credential-error').textContent=error.message;
+    }finally{button.disabled=false;}
   }
   function openAliExpressCredentials(){
     const local=["localhost","127.0.0.1"].includes(location.hostname);
     document.getElementById("ali-credential-redirect").value=local?"":`${location.origin}/app/aliexpress/callback`;
-    document.getElementById("ali-credential-error").textContent="";document.getElementById("ali-authorization-code").value="";document.getElementById("ali-code-step").style.display="none";const saveBtn=document.getElementById("save-ali-credentials");saveBtn.disabled=false;saveBtn.innerHTML=`<i class="ti ti-lock"></i> Save & Authenticate`;document.getElementById("aliexpress-credentials-modal").classList.add("open")
+    document.getElementById("ali-credential-error").textContent="";document.getElementById("ali-authorization-code").value="";document.getElementById("ali-code-step").style.display="none";const codeBtn=document.getElementById('submit-ali-code');codeBtn.disabled=false;codeBtn.textContent='Connect AliExpress';const saveBtn=document.getElementById("save-ali-credentials");saveBtn.disabled=false;saveBtn.innerHTML=`<i class="ti ti-lock"></i> Save & Authenticate`;document.getElementById("aliexpress-credentials-modal").classList.add("open")
   }
   function closeAliExpressCredentials(){document.getElementById("aliexpress-credentials-modal").classList.remove("open")}
   async function saveAliExpressCredentialsAndLogin(){
