@@ -1,4 +1,4 @@
-"""Server-owned account entitlements; billing is intentionally disabled by default."""
+"""Account entitlements granted by verified Shopify subscriptions."""
 from fastapi import HTTPException
 from .models import User, Product, Mapping, PlanProduct
 from .config import get_settings
@@ -24,6 +24,8 @@ def account(db, user_id, lock=False):
 
 
 def plan_name(user):
+    if user.selected_plan in {"growth", "pro"} and user.subscription_status != "active":
+        return "free"
     return user.selected_plan if user.selected_plan in PLANS else "free"
 
 

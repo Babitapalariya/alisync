@@ -343,22 +343,17 @@ def me(user: User = Depends(current_user)):
 
 @router.post("/subscription/select")
 def select_subscription(payload: PlanSelectionRequest, db: Session = Depends(get_db),
-                        user: User = Depends(current_user)):
+                        user: User = Depends(current_user), shop: Shop = Depends(get_current_shop)):
     plans = set(PLANS)
     plan = payload.plan.lower().strip()
     if plan == "starter": plan = "free"
-    if get_settings().BILLING_ENABLED and plan != "free":
-        raise HTTPException(409, "Paid billing is not connected. Contact support to change your plan.")
     account(db, user.id, lock=True)
     if plan not in plans:
         raise HTTPException(400, "Unknown subscription plan")
     if not user.email_verified:
         raise HTTPException(403, "Verify your email first")
-    user.selected_plan = plan
-    user.subscription_status = "active_no_billing"
-    db.commit()
-    return {"message": f"{plan.title()} plan selected", "plan": plan,
-            "subscription_status": "active_no_billing", "billing_enabled": False, "payment_required": False}
+    from .billing import select_plan
+    return select_plan(db, user, shop, plan)
 
 @router.get("/connections/status")
 def connection_status(shop_id: int | None = None, db: Session = Depends(get_db),
@@ -753,6 +748,8 @@ def sync_logs(limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_db
 
 @router.get("/subscription/entitlements")
 def subscription_entitlements(db: Session = Depends(get_db), user: User = Depends(current_user)):
+    from .billing import reconcile
+    reconcile(db, user)
     return subscription_summary(db, user)
 
 

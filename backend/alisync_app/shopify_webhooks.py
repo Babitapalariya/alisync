@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import re
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func, or_
@@ -11,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from .config import get_settings
 from .database import get_db
-from .models import Shop, Product, Mapping, PendingImport, SyncLog, Notification, PlanProduct
+from .models import Shop, User, Product, Mapping, PendingImport, SyncLog, Notification, PlanProduct
 
 router = APIRouter(tags=["Shopify privacy webhooks"])
 TOPICS = {"customers/data_request", "customers/redact", "shop/redact"}
@@ -32,13 +33,43 @@ async def verified_payload(request: Request):
         raise HTTPException(400, "Invalid JSON")
     if not isinstance(payload, dict):
         raise HTTPException(400, "Expected a JSON object")
-    domain = payload.get("shop_domain")
+    domain = (request.headers.get("X-Shopify-Shop-Domain")
+              if request.headers.get("X-Shopify-Topic") == "app/uninstalled" else payload.get("shop_domain"))
     if not isinstance(domain, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]*\.myshopify\.com", domain):
         raise HTTPException(400, "Invalid shop_domain")
     header_domain = request.headers.get("X-Shopify-Shop-Domain")
     if header_domain and header_domain != domain:
         raise HTTPException(400, "Shop domain mismatch")
     return payload
+
+
+@router.post("/api/webhooks/shopify/uninstalled")
+@router.post("/app/webhooks/shopify/uninstalled")
+async def uninstall_webhook(request: Request, db: Session = Depends(get_db)):
+    await verified_payload(request)
+    if request.headers.get("X-Shopify-Topic") != "app/uninstalled":
+        raise HTTPException(400, "Unsupported uninstall topic")
+    shops = db.query(Shop).filter(
+        Shop.shop_domain == request.headers["X-Shopify-Shop-Domain"],
+        or_(Shop.shopify_client_id.is_(None), Shop.shopify_client_id == "",
+            Shop.shopify_client_id == get_settings().SHOPIFY_CLIENT_ID)).all()
+    for shop in shops:
+        shop.is_active = False
+        shop.access_token = None
+        shop.shopify_refresh_token_encrypted = None
+        shop.uninstalled_at = datetime.now(timezone.utc)
+        shop.subscription_id = None
+        shop.subscription_status = "none"
+        shop.plan_name = "free"
+    db.flush()
+    for user_id in {shop.user_id for shop in shops}:
+        user = db.get(User, user_id)
+        active = db.query(Shop).filter_by(user_id=user_id, is_active=True, subscription_status="active").all()
+        from .subscriptions import PLANS
+        user.selected_plan = max((s.plan_name for s in active), key=lambda p: PLANS.get(p, PLANS["free"])["price"], default="free")
+        user.subscription_status = "active" if user.selected_plan != "free" else "none"
+    db.commit()
+    return {"received": True}
 
 
 @router.post("/api/webhooks/shopify/privacy")

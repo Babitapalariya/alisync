@@ -93,6 +93,36 @@ class WebhookTests(unittest.TestCase):
         self.assertEqual(self.send().status_code, 503)
         self.assertEqual(self.db.query(Shop).count(), 2)
 
+    def test_uninstall_revokes_tokens_and_paid_access_without_deleting_products(self):
+        shop = self.db.get(Shop, 1)
+        shop.access_token = 'old-token'
+        shop.shopify_refresh_token_encrypted = 'old-refresh'
+        shop.subscription_id = 'gid://shopify/AppSubscription/1'
+        shop.subscription_status = 'active'
+        shop.plan_name = 'pro'
+        user = self.db.get(User, 1)
+        user.selected_plan = 'pro'; user.subscription_status = 'active'
+        self.db.commit()
+        for _ in range(2):
+            response = self.send(topic='app/uninstalled', body=b'{"id":123}',
+                path='/api/webhooks/shopify/uninstalled',
+                **{'X-Shopify-Shop-Domain': 'first.myshopify.com'})
+            self.assertEqual(response.status_code, 200, response.text)
+        self.assertFalse(shop.is_active)
+        self.assertIsNone(shop.access_token)
+        self.assertIsNone(shop.shopify_refresh_token_encrypted)
+        self.assertIsNone(shop.subscription_id)
+        self.assertEqual(user.selected_plan, 'free')
+        self.assertTrue(self.db.get(Shop, 2).is_active)
+        self.assertEqual(self.db.query(Product).count(), 2)
+
+    def test_forged_uninstall_cannot_revoke_access(self):
+        response = self.send(topic='app/uninstalled', signature='invalid',
+            path='/app/webhooks/shopify/uninstalled',
+            **{'X-Shopify-Shop-Domain': 'first.myshopify.com'})
+        self.assertEqual(response.status_code, 401)
+        self.assertTrue(self.db.get(Shop, 1).is_active)
+
 
 if __name__ == '__main__':
     unittest.main()

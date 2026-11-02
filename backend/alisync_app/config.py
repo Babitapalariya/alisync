@@ -8,7 +8,8 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 
 class Settings:
-    BILLING_ENABLED = os.getenv("BILLING_ENABLED", "false").lower() == "true"
+    BILLING_ENABLED = os.getenv("BILLING_ENABLED", "true").lower() == "true"
+    SHOPIFY_BILLING_TEST = os.getenv("SHOPIFY_BILLING_TEST", "false").lower() == "true"
     MYSQL_URL = os.getenv("MYSQL_URL", "mysql+pymysql://root@localhost/alisync_app")
     APP_SECRET = os.getenv("APP_SECRET", "")
     FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3002")

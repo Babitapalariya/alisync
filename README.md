@@ -90,7 +90,22 @@ Reference: https://developers.google.com/identity/protocols/oauth2/web-server
 - **Growth ($14/month):** unlimited sourcing, imports, existing-product/variant mapping and supplier relinking. Choose up to 5 products for full Pro access in **Plans & Product Access**; release a slot to choose another.
 - **Pro ($19/month):** unlimited products with every feature included.
 
-`BILLING_ENABLED=false` remains the default. Plan changes apply without checkout or charges. Setting it to true blocks self-service paid-plan selection until a billing integration exists.
+Paid plans use Shopify Billing approval. `BILLING_ENABLED=true` is the default; setting it to false disables paid plan purchases and never grants free paid access. `SHOPIFY_BILLING_TEST=false` is the production default. Set it to true only in a test environment to exercise Shopify test charges. The backend verifies active subscriptions when loading entitlements and before plan changes. Legacy locally selected paid plans no longer grant paid access.
+
+Before resubmitting the app, deploy the backend/frontend together and release the updated `shopify.app.toml` so the `app/uninstalled` webhook is registered. Ensure `SHOPIFY_CLIENT_ID`, `SHOPIFY_CLIENT_SECRET`, and `SHOPIFY_API_VERSION` match the installed public app, and explicitly set `BILLING_ENABLED=true` if an older environment disabled it. No database migration is required.
+
+Review acceptance checks on a Shopify development store:
+
+- Select Growth/Pro: Shopify must display charge approval; declining must preserve the previous plan.
+- Approve a test charge, re
+
+
+open the app, and verify the correct entitlements. Switch paid plans and downgrade to Free; verify the subscription in Shopify.
+- Uninstall/reinstall: old paid access must disappear and purchasing again must require Shopify approval.
+- Follow the reviewer import instructions from a fresh login. Connect AliExpress, import a working product URL, and verify the created Shopify product. Missing supplier credentials must show a connection error without logging out of AliSync.
+- Confirm a genuinely expired AliSync session opens the login screen and that a fresh login restores imports.
+
+Local mocked tests do not replace these live approval and import checks. Provide the reviewer with current connection instructions and a tested product URL; do not resubmit until the deployed flows pass.
 
 Sourcing reservations are account-wide, persistent and ordered by reservation ID; previews count toward the Free allowance. Failed previews do not reserve quota. Free access is automatic and ignores earlier manual selections; those selections are retained for Growth. Downgrades preserve existing products but enforce the new plan limits. Legacy Starter uses Free rules. Remap buttons remain visible only for dead-listed products.
 

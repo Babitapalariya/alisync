@@ -24,7 +24,7 @@ def get_latest_token(db: Session, shop_id: int | None = None) -> AliExpressToken
         .first()
     )
     if not token:
-        raise HTTPException(401, "Connect an AliExpress account first")
+        raise HTTPException(409, "Connect an AliExpress account first")
     return token
 
 
@@ -35,5 +35,5 @@ def get_aliexpress_credentials(db: Session) -> tuple[str, str, str]:
         user_id = shop.user_id if shop else None
     row = db.query(AliExpressCredential).filter(AliExpressCredential.user_id == user_id).first()
     if not row:
-        raise HTTPException(401, "Configure AliExpress API credentials first")
+        raise HTTPException(409, "Configure AliExpress API credentials first")
     return row.app_key, decrypt_secret(row.app_secret_encrypted), row.redirect_uri

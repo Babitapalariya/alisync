@@ -45,6 +45,12 @@ class SubscriptionApiTests(unittest.TestCase):
     def tearDown(self):
         self.client.close();self.db.close();self.engine.dispose()
 
+    def approve_plan(self, plan):
+        # Entitlement tests start after Shopify approval. Billing is tested separately.
+        self.user.selected_plan = plan
+        self.user.subscription_status = "active"
+        self.db.commit()
+
     def test_free_basic_actions_block_before_supplier_calls(self):
         for i in range(6): policy.reserve_product(self.db,self.shop,str(200+i))
         self.db.get(Product,1).aliexpress_id="205";self.db.commit()
@@ -55,7 +61,7 @@ class SubscriptionApiTests(unittest.TestCase):
         self.assertFalse(self.ns["sync_product_price"](self.shop,1,self.db));self.supplier.assert_not_called()
 
     def test_selected_growth_product_can_apply_percentage(self):
-        self.client.post("/subscription/select",json={"plan":"growth"})
+        self.approve_plan("growth")
         result=self.client.post("/subscription/products/imported/1/access",json={"enabled":True})
         self.assertEqual(result.status_code,200,result.text)
         result=self.client.post("/pricing/imported/1/markup",json={"kind":"percentage","amount":10})
@@ -64,18 +70,16 @@ class SubscriptionApiTests(unittest.TestCase):
         self.assertEqual(self.db.get(Product,1).price_percentage,10)
         self.assertEqual(self.db.get(Product,1).price_mode,"percentage")
 
-    def test_payment_free_plan_switch_and_growth_denial(self):
-        response=self.client.post("/subscription/select",json={"plan":"growth"})
-        self.assertEqual(response.status_code,200,response.text)
-        self.assertFalse(response.json()["payment_required"])
+    def test_approved_plan_entitlements_and_growth_denial(self):
+        self.approve_plan("growth")
         self.assertEqual(self.client.post("/pricing/imported/1/markup",json={"amount":5}).status_code,403)
         self.assertFalse(self.ns["sync_product_price"](self.shop,1,self.db));self.supplier.assert_not_called()
-        self.assertEqual(self.client.post("/subscription/select",json={"plan":"pro"}).status_code,200)
+        self.approve_plan("pro")
         self.assertEqual(self.client.post("/pricing/imported/1/markup",json={"amount":-10}).status_code,200)
         self.assertEqual(float(self.sync.call_args.args[2][0]["price"]),90)
 
     def test_invalid_percentage_has_no_external_effect(self):
-        self.client.post("/subscription/select",json={"plan":"pro"})
+        self.approve_plan("pro")
         self.assertEqual(self.client.post("/pricing/imported/1/markup",json={"kind":"percentage","amount":-101}).status_code,400)
         self.supplier.assert_not_called();self.sync.assert_not_called()
 

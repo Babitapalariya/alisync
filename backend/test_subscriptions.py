@@ -28,7 +28,7 @@ class SubscriptionTests(unittest.TestCase):
         self.engine.dispose()
 
     def select(self, plan):
-        user = self.db.get(User, 1); user.selected_plan = plan; self.db.commit()
+        user = self.db.get(User, 1); user.selected_plan = plan; user.subscription_status = "active"; self.db.commit()
 
     def add(self, number, mapping=False, shop=None):
         shop = shop or self.shop

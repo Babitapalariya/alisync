@@ -1017,7 +1017,17 @@
       if(shopifyEmbedded)options.headers.set("X-Shopify-Session-Token",await embeddedToken());
       if(activeShopId)options.headers.set("X-Shop-ID",activeShopId);
     }
-    return nativeFetch(input,options).then(response=>{if(response.status===401&&tenantToken&&!url.includes("/auth/"))tenantLogout(false);return response});
+    const response=await nativeFetch(input,options);
+    if(response.status===401&&tenantToken&&url.startsWith(API)&&!url.includes("/auth/")){
+      const error=await response.clone().json().catch(()=>({}));
+      if(["Authentication required","Invalid or expired AliSync session","User account is unavailable"].includes(error.detail)){
+        tenantLogout(false);
+        document.getElementById("tenant-gate").style.display="flex";
+        showAuthView("login");
+        tenantMessage("tenant-auth-message","Your session has expired. Sign in again to continue.");
+      }
+    }
+    return response;
   };
 
   async function tenantJson(path,options={}){const r=await fetch(API+path,options),d=await r.json().catch(()=>({}));if(!r.ok){const detail=typeof d.detail==="string"?d.detail:(d.detail?.message||d.message||`HTTP ${r.status}`);throw new Error(detail)}return d}
@@ -1101,7 +1111,7 @@
   let subscriptionState=null;
   async function loadSubscription(){
     try{
-      const data=await tenantJson('/subscription/entitlements');subscriptionState=data;
+      const data=await tenantJson('/subscription/entitlements');subscriptionState=data;tenantSelectedPlan=data.plan;
       const limit=data.limits.max_imported_products,used=data.usage.sourced_products;
       const accessText=data.plan==='free'?`${data.usage.full_feature_products} / 5 first products with full Pro access`:data.plan==='growth'?`${data.usage.full_feature_products} / 5 full-access products selected`:'Full access for all products';
       document.getElementById('subscription-summary').innerHTML=`<i class="ti ti-bulb" aria-hidden="true"></i><span>${escapeHtml(data.limits.name)} plan &middot; ${used}${limit===null?' products sourced':` / ${limit} products sourced`} &middot; ${accessText} &middot; ${data.billing_enabled?'Billing enabled':'No payment collected.'}</span>`;
@@ -1155,7 +1165,7 @@
   function upgradeFeaturesMessage(){return '<div class="info-banner">Price and inventory tools require full product access. <button class="btn btn-sm" onclick="showPricing()">Manage plan &amp; access</button></div>'}
 
   async function selectPlan(plan){
-    try{const d=await tenantJson("/subscription/select",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({plan})});tenantSelectedPlan=d.plan;showToast(d.message,"ok");document.querySelector(".sb-urole").textContent=`${d.plan.charAt(0).toUpperCase()+d.plan.slice(1)} plan`;await loadSubscription()}
+    try{const d=await tenantJson("/subscription/select",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({plan})});if(d.confirmation_url){window.open(d.confirmation_url,"_top");return}tenantSelectedPlan=d.plan;showToast(d.message,"ok");document.querySelector(".sb-urole").textContent=`${d.plan.charAt(0).toUpperCase()+d.plan.slice(1)} plan`;await loadSubscription()}
     catch(e){showToast("Could not select plan: "+e.message,"err")}
   }
   async function loadTenantShops(){
