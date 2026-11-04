@@ -18,7 +18,11 @@ def billing_error(errors, fallback):
 
 
 def graphql(db, shop, query, variables=None):
-    ensure_shopify_access_token(shop, db)
+    try:
+        ensure_shopify_access_token(shop, db)
+    except HTTPException as exc:
+        raise HTTPException(exc.status_code,
+            f"Billing verification for {shop.shop_domain}: {exc.detail}") from exc
     settings = get_settings()
     try:
         response = requests.post(
@@ -36,6 +40,9 @@ def graphql(db, shop, query, variables=None):
 
 def reconcile(db, user):
     shops = db.query(Shop).filter_by(user_id=user.id).all()
+    # Tokens issued to another app cannot verify this app's subscription.
+    shops = [shop for shop in shops if not shop.shopify_client_id
+             or shop.shopify_client_id == get_settings().SHOPIFY_CLIENT_ID]
     for shop in shops:
         if not shop.is_active or not shop.access_token:
             shop.plan_name = "free"
@@ -73,10 +80,14 @@ def reconcile(db, user):
 
 
 def select_plan(db, user, shop, plan):
+    if shop.shopify_client_id and shop.shopify_client_id != get_settings().SHOPIFY_CLIENT_ID:
+        raise HTTPException(409, "Reconnect this store using the AliSync Partner app before changing plans")
     reconcile(db, user)
     if plan == "free":
         # Plans cover the account: cancel every billed store before downgrading.
         for billed in db.query(Shop).filter_by(user_id=user.id, is_active=True).all():
+            if billed.shopify_client_id and billed.shopify_client_id != get_settings().SHOPIFY_CLIENT_ID:
+                continue
             if billed.subscription_id:
                 result = graphql(db, billed, """mutation($id: ID!) {
                     appSubscriptionCancel(id: $id) { userErrors { message } }
@@ -89,8 +100,10 @@ def select_plan(db, user, shop, plan):
         raise HTTPException(503, "Paid plans are temporarily unavailable")
     if user.selected_plan == plan:
         return {"plan": plan, "message": "Plan already active", "payment_required": False}
-    other = db.query(Shop).filter(Shop.user_id == user.id, Shop.id != shop.id,
-                                 Shop.subscription_status == "active").first()
+    other = next((candidate for candidate in db.query(Shop).filter(
+        Shop.user_id == user.id, Shop.id != shop.id,
+        Shop.subscription_status == "active").all()
+        if not candidate.shopify_client_id or candidate.shopify_client_id == get_settings().SHOPIFY_CLIENT_ID), None)
     if other:
         raise HTTPException(409, "Change your plan from the store where your subscription was approved")
     settings = get_settings()

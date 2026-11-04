@@ -86,6 +86,17 @@ class BillingTests(unittest.TestCase):
             billing.select_plan(self.db, self.user, self.shop, "pro")
         self.assertEqual(plan_name(self.user), "free")
 
+    def test_other_app_connection_cannot_block_or_grant_billing(self):
+        other = Shop(user_id=self.user.id, shop_domain="old.myshopify.com",
+                     shopify_client_id="another-app", access_token="expired",
+                     plan_name="pro", subscription_status="active")
+        self.db.add(other); self.db.commit()
+        self.subscriptions = [active()]
+        billing.reconcile(self.db, self.user)
+        self.assertEqual(plan_name(self.user), "growth")
+        self.assertEqual(self.api.call_count, 1)
+        self.assertEqual(other.access_token, "expired")
+
     def test_failed_creation_never_grants_access(self):
         self.api.side_effect = [
             {"currentAppInstallation": {"activeSubscriptions": []}},
