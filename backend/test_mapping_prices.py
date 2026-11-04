@@ -24,7 +24,7 @@ class MappingPriceTests(unittest.TestCase):
             Mapping(id=2,user_id=1,shop_id=11,aliexpress_id="ali2",shopify_product_id="200",price_mode="auto"),
             Mapping(id=3,user_id=2,shop_id=21,aliexpress_id="ali1",shopify_product_id="100",price_mode="auto")])
         self.db.commit()
-        self.shop=SimpleNamespace(id=11,user_id=1)
+        self.shop=SimpleNamespace(id=11,user_id=1,is_active=True,shopify_client_id=None,plan_name="pro",subscription_status="active")
         self.sync=Mock(return_value="updated")
         self.raw={"sale_price":"10", "skus":[{"sku_id":"sku1","sale_price":"10"}]}
         self.ns=dict(require_bulk=require_bulk,require_access=require_access,require_entity=require_entity,Depends=Depends,HTTPException=HTTPException,Session=Session,Shop=object,ProductMapping=Mapping,

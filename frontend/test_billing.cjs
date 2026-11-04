@@ -1,0 +1,20 @@
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+const html=fs.readFileSync('frontend/index.html','utf8');
+for(const match of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g))if(!match[1].includes('src=')&&!match[1].includes('application/'))new vm.Script(match[2]);
+const nodes={},node=id=>nodes[id]??={textContent:'',innerHTML:'',appendChild(){}};
+let response;
+const data={shop_id:1,shop_domain:'one.myshopify.com',plan:'pro',status:'active',limits:{name:'Pro',max_imported_products:null},usage:{sourced_products:6,full_feature_products:6},billing_enabled:true,products:[],plans:{free:{name:'Free',price:0},growth:{name:'Growth',price:14},pro:{name:'Pro',price:19}}};response=data;
+const context=vm.createContext({activeShopId:'1',shopifyEmbedded:true,tenantShops:[{id:1,shop_domain:'one.myshopify.com'},{id:2,shop_domain:'two.myshopify.com'}],document:{getElementById:node,createElement:()=>({}),querySelector:node},escapeHtml:s=>s,tenantJson:async()=>response});
+const load=html.slice(html.indexOf('  let subscriptionState=null;'),html.indexOf('  async function setProductAccess'));
+const access=html.slice(html.indexOf('  function productHasFullAccess'),html.indexOf('  function productAccessTag'));
+const selectors=html.slice(html.indexOf('  function renderShopSelectors'),html.indexOf('  async function addTenantShop'));
+vm.runInContext(load+access+selectors,context);
+(async()=>{
+ vm.runInContext('renderShopSelectors()',context);assert(node('active-shop-select').innerHTML.includes('one.myshopify.com'));assert(!node('active-shop-select').innerHTML.includes('two.myshopify.com'));
+ await vm.runInContext('loadSubscription()',context);assert.equal(vm.runInContext("productHasFullAccess('imported',1)",context),true);
+ context.activeShopId='2';assert.equal(vm.runInContext("productHasFullAccess('imported',1)",context),false);
+ response={...data,shop_id:2,shop_domain:'two.myshopify.com',plan:'free',limits:{name:'Free',max_imported_products:25}};
+ await vm.runInContext('loadSubscription()',context);assert(node('subscription-summary').innerHTML.includes('two.myshopify.com'));
+ let resolve;response=new Promise(r=>resolve=r);const pending=vm.runInContext('loadSubscription()',context);context.activeShopId='1';resolve(data);await pending;assert.equal(vm.runInContext('subscriptionState',context),null);
+ console.log('PASS: JS syntax, embedded store selector, independent plan access, and stale response isolation');
+})().catch(error=>{console.error(error);process.exitCode=1});

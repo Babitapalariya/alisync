@@ -1,4 +1,4 @@
-"""Account entitlements granted by verified Shopify subscriptions."""
+"""Store entitlements granted by verified Shopify subscriptions."""
 from fastapi import HTTPException
 from .models import User, Product, Mapping, PlanProduct
 from .config import get_settings
@@ -23,10 +23,13 @@ def account(db, user_id, lock=False):
     return user
 
 
-def plan_name(user):
-    if user.selected_plan in {"growth", "pro"} and user.subscription_status != "active":
+def plan_name(shop):
+    if not shop.is_active or (shop.shopify_client_id and shop.shopify_client_id != get_settings().SHOPIFY_CLIENT_ID):
         return "free"
-    return user.selected_plan if user.selected_plan in PLANS else "free"
+    name = shop.plan_name
+    if name in {"growth", "pro"} and shop.subscription_status != "active":
+        return "free"
+    return name if name in PLANS else "free"
 
 
 def hydrate(db, user_id):
@@ -48,10 +51,10 @@ def hydrate(db, user_id):
 def reserve_product(db, shop, aliexpress_id, mapping=False):
     user = account(db, shop.user_id, lock=True)
     hydrate(db, user.id)
-    name = plan_name(user)
+    name = plan_name(shop)
     row = db.query(PlanProduct).filter_by(shop_id=shop.id, aliexpress_id=str(aliexpress_id)).with_for_update().first()
     if row is None:
-        if name == "free" and len(db.query(PlanProduct).filter_by(user_id=user.id).with_for_update().all()) >= 25:
+        if name == "free" and len(db.query(PlanProduct).filter_by(user_id=user.id, shop_id=shop.id).with_for_update().all()) >= 25:
             raise HTTPException(403, FREE_LIMIT)
         row = PlanProduct(user_id=user.id, shop_id=shop.id, aliexpress_id=str(aliexpress_id), full_access=False)
         db.add(row)
@@ -60,10 +63,10 @@ def reserve_product(db, shop, aliexpress_id, mapping=False):
 
 
 def has_full_access(db, shop, aliexpress_id):
-    name = plan_name(account(db, shop.user_id))
+    name = plan_name(shop)
     if name == "pro":
         return True
-    rows = db.query(PlanProduct).filter_by(user_id=shop.user_id)
+    rows = db.query(PlanProduct).filter_by(user_id=shop.user_id, shop_id=shop.id)
     if name == "free":
         return any(row.shop_id == shop.id and row.aliexpress_id == str(aliexpress_id)
                    for row in rows.order_by(PlanProduct.id).limit(5).all())
@@ -71,7 +74,7 @@ def has_full_access(db, shop, aliexpress_id):
 
 
 def require_access(db, shop, aliexpress_id, feature="automation"):
-    name = plan_name(account(db, shop.user_id))
+    name = plan_name(shop)
     if name == "pro" or (feature == "mapping" and name in {"free", "growth"}) or (feature == "relink" and name == "growth") or has_full_access(db, shop, aliexpress_id):
         return
     message = ("Choose this product for one of your 5 full-access slots in Plans, or upgrade to Pro. " + FULL_LIMIT
@@ -100,30 +103,30 @@ def move_access(db, shop, old_id, new_id):
     db.flush()
 
 
-def subscription_summary(db, user):
+def subscription_summary(db, user, shop):
     user = account(db, user.id, lock=True)
     hydrate(db, user.id)
-    rows = db.query(PlanProduct).filter_by(user_id=user.id).order_by(PlanProduct.id).all()
-    name = plan_name(user)
+    rows = db.query(PlanProduct).filter_by(user_id=user.id, shop_id=shop.id).order_by(PlanProduct.id).all()
+    name = plan_name(shop)
     products = []
     selected = {(r.shop_id, r.aliexpress_id): r.full_access for r in rows}
     free_keys = {(r.shop_id, r.aliexpress_id) for r in rows[:5]}
     for model, kind in ((Product, "imported"), (Mapping, "mapping")):
-        for entity in db.query(model).filter_by(user_id=user.id).all():
+        for entity in db.query(model).filter_by(user_id=user.id, shop_id=shop.id).all():
             full = name == "pro" or (name == "free" and (entity.shop_id, entity.aliexpress_id) in free_keys) or (name == "growth" and selected.get((entity.shop_id, entity.aliexpress_id), False))
             products.append({"id": entity.id, "source": kind, "shop_id": entity.shop_id,
                 "aliexpress_id": entity.aliexpress_id, "title": entity.custom_title or
                 getattr(entity, "original_title", None) or getattr(entity, "shopify_product_title", None) or entity.title,
                 "full_access": full, "selected": selected.get((entity.shop_id, entity.aliexpress_id), False)})
     db.commit()
-    return {"plan": name, "status": user.subscription_status, "billing_enabled": get_settings().BILLING_ENABLED,
+    return {"plan": name, "shop_id": shop.id, "shop_domain": shop.shop_domain, "status": shop.subscription_status, "billing_enabled": get_settings().BILLING_ENABLED,
             "payment_required": False, "is_active": True, "plans": PLANS,
             "limits": PLANS[name], "usage": {"sourced_products": len(rows),
             "full_feature_products": len(rows) if name == "pro" else min(5, len(rows)) if name == "free" else sum(bool(r.full_access) for r in rows)}, "products": products}
 
 
 def require_any_full(db, shop):
-    if plan_name(account(db, shop.user_id)) == "pro":
+    if plan_name(shop) == "pro":
         return
     rows = db.query(PlanProduct).filter_by(user_id=shop.user_id, shop_id=shop.id).all()
     if any(has_full_access(db, shop, row.aliexpress_id) for row in rows):

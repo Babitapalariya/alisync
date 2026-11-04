@@ -15,7 +15,7 @@ class PendingStockTests(unittest.TestCase):
         self.engine=create_engine('sqlite://');Base.metadata.create_all(self.engine)
         self.db=Session(self.engine)
         self.db.add(User(id=1,email="pro@test.invalid",password_hash="test",selected_plan="pro"))
-        self.db.add(Shop(id=1,user_id=1,shop_domain='test.myshopify.com',access_token='test'))
+        self.db.add(Shop(id=1,user_id=1,shop_domain='test.myshopify.com',access_token='test',plan_name='pro',subscription_status='active'))
         self.pending=PendingImport(id=1,user_id=1,shop_id=1,aliexpress_id='ali',status='partial')
         self.product=ImportedProduct(id=1,user_id=1,shop_id=1,aliexpress_id='ali',shopify_product_id='123',auto_inventory_sync=True)
         self.db.add_all([self.pending,self.product]);self.db.commit()

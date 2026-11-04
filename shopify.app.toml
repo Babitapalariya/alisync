@@ -24,3 +24,7 @@ uri = "https://alisync.retradviews.com/api/webhooks/shopify/privacy"
 [[webhooks.subscriptions]]
 topics = ["app/uninstalled"]
 uri = "https://alisync.retradviews.com/api/webhooks/shopify/uninstalled"
+
+[[webhooks.subscriptions]]
+topics = ["app_subscriptions/update"]
+uri = "https://alisync.retradviews.com/api/webhooks/shopify/subscriptions"

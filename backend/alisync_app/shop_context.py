@@ -68,6 +68,9 @@ def get_current_shop(
 ) -> Shop:
     selected_id = x_shop_id if x_shop_id is not None else shop_id
     query = db.query(Shop).filter(Shop.user_id == user.id, Shop.is_active == True)
+    session_domain = db.info.get("shopify_session_domain")
+    if session_domain:
+        query = query.filter(Shop.shop_domain == session_domain)
     if selected_id is not None:
         query = query.filter(Shop.id == selected_id)
     shops = query.order_by(Shop.id.asc()).limit(2).all()

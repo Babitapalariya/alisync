@@ -2768,7 +2768,7 @@ def debug_run_sync_now(background_tasks: BackgroundTasks, db: Session = Depends(
 
 @api.get("/subscription/status")
 def subscription_status(shop: Shop = Depends(get_current_shop), db: Session = Depends(get_db)):
-    return subscription_summary(db, account(db, shop.user_id))
+    return subscription_summary(db, account(db, shop.user_id), shop)
 
 
 @api.get("/debug/product/{shopify_product_id}")

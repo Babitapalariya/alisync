@@ -112,9 +112,25 @@ class WebhookTests(unittest.TestCase):
         self.assertIsNone(shop.access_token)
         self.assertIsNone(shop.shopify_refresh_token_encrypted)
         self.assertIsNone(shop.subscription_id)
-        self.assertEqual(user.selected_plan, 'free')
+        self.assertEqual(shop.plan_name, 'free')
+        self.assertEqual(shop.subscription_status, 'none')
         self.assertTrue(self.db.get(Shop, 2).is_active)
         self.assertEqual(self.db.query(Product).count(), 2)
+
+    def test_subscription_update_is_signed_and_scoped(self):
+        with patch('alisync_app.billing.reconcile') as reconcile:
+            response = self.send(topic='app_subscriptions/update', body=b'{}',
+                path='/api/webhooks/shopify/subscriptions',
+                **{'X-Shopify-Shop-Domain': 'first.myshopify.com'})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(reconcile.call_count, 1)
+            self.assertEqual(reconcile.call_args.args[1].id, 1)
+            reconcile.reset_mock()
+            response = self.send(topic='app_subscriptions/update', signature='invalid',
+                path='/api/webhooks/shopify/subscriptions',
+                **{'X-Shopify-Shop-Domain': 'first.myshopify.com'})
+            self.assertEqual(response.status_code, 401)
+            reconcile.assert_not_called()
 
     def test_forged_uninstall_cannot_revoke_access(self):
         response = self.send(topic='app/uninstalled', signature='invalid',

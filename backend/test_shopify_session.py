@@ -29,6 +29,28 @@ class ShopifySessionTests(unittest.TestCase):
     def token(self, **changes):
         return jwt.encode(self.claims | changes, self.settings.SHOPIFY_CLIENT_SECRET, algorithm="HS256")
 
+    def test_embedded_store_selection_cannot_use_another_owned_store(self):
+        from alisync_app.shop_context import get_current_shop
+        engine = create_engine("sqlite://")
+        Base.metadata.create_all(engine)
+        try:
+            with Session(engine) as db:
+                user = User(email="scope@test.invalid", password_hash="test")
+                db.add(user); db.flush()
+                selected = Shop(user_id=user.id, shop_domain="test.myshopify.com", access_token="test")
+                other = Shop(user_id=user.id, shop_domain="other.myshopify.com", access_token="test")
+                db.add_all([selected, other]); db.commit()
+                credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials=create_token(user.id))
+                current_user(credentials, db, self.token())
+                with patch('alisync_app.shop_context.ensure_shopify_access_token', side_effect=lambda shop,db:shop):
+                    self.assertEqual(get_current_shop(None, None, db, user).id, selected.id)
+                    with self.assertRaises(HTTPException):
+                        get_current_shop(None, other.id, db, user)
+                    db.info.pop("shopify_session_domain")
+                    self.assertEqual(get_current_shop(None, other.id, db, user).id, other.id)
+        finally:
+            engine.dispose()
+
     def test_valid_session_endpoint_aliases(self):
         app = FastAPI(); app.include_router(router)
         with TestClient(app) as client:

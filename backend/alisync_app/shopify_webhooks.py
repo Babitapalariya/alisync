@@ -34,7 +34,7 @@ async def verified_payload(request: Request):
     if not isinstance(payload, dict):
         raise HTTPException(400, "Expected a JSON object")
     domain = (request.headers.get("X-Shopify-Shop-Domain")
-              if request.headers.get("X-Shopify-Topic") == "app/uninstalled" else payload.get("shop_domain"))
+              if request.headers.get("X-Shopify-Topic") in {"app/uninstalled", "app_subscriptions/update"} else payload.get("shop_domain"))
     if not isinstance(domain, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]*\.myshopify\.com", domain):
         raise HTTPException(400, "Invalid shop_domain")
     header_domain = request.headers.get("X-Shopify-Shop-Domain")
@@ -62,13 +62,24 @@ async def uninstall_webhook(request: Request, db: Session = Depends(get_db)):
         shop.subscription_status = "none"
         shop.plan_name = "free"
     db.flush()
-    for user_id in {shop.user_id for shop in shops}:
-        user = db.get(User, user_id)
-        active = db.query(Shop).filter_by(user_id=user_id, is_active=True, subscription_status="active").all()
-        from .subscriptions import PLANS
-        user.selected_plan = max((s.plan_name for s in active), key=lambda p: PLANS.get(p, PLANS["free"])["price"], default="free")
-        user.subscription_status = "active" if user.selected_plan != "free" else "none"
     db.commit()
+    return {"received": True}
+
+
+@router.post("/api/webhooks/shopify/subscriptions")
+@router.post("/app/webhooks/shopify/subscriptions")
+async def subscription_webhook(request: Request, db: Session = Depends(get_db)):
+    await verified_payload(request)
+    if request.headers.get("X-Shopify-Topic") != "app_subscriptions/update":
+        raise HTTPException(400, "Unsupported subscription topic")
+    shops = db.query(Shop).filter(
+        Shop.shop_domain == request.headers["X-Shopify-Shop-Domain"], Shop.is_active == True,
+        or_(Shop.shopify_client_id.is_(None), Shop.shopify_client_id == "",
+            Shop.shopify_client_id == get_settings().SHOPIFY_CLIENT_ID)).all()
+    from .billing import reconcile
+    for shop in shops:
+        # Fetch current state so delayed events cannot restore an obsolete plan.
+        reconcile(db, shop)
     return {"received": True}
 
 

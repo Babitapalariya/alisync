@@ -1,11 +1,10 @@
-"""Shopify is the source of truth for paid account access."""
+"""Shopify is the source of truth for paid store access."""
 from urllib.parse import quote
 
 import requests
 from fastapi import HTTPException
 
 from .config import get_settings
-from .models import Shop
 from .shop_context import ensure_shopify_access_token
 from .subscriptions import PLANS
 
@@ -38,87 +37,72 @@ def graphql(db, shop, query, variables=None):
     return body["data"]
 
 
-def reconcile(db, user, *, allow_partial=False):
-    warnings = []
-    verified = []
-    shops = db.query(Shop).filter_by(user_id=user.id).all()
-    # Tokens issued to another app cannot verify this app's subscription.
-    shops = [shop for shop in shops if not shop.shopify_client_id
-             or shop.shopify_client_id == get_settings().SHOPIFY_CLIENT_ID]
-    for shop in shops:
-        if not shop.is_active or not shop.access_token:
-            shop.plan_name = "free"
-            shop.subscription_status = "none"
-            shop.subscription_id = None
-            continue
-        try:
-            data = graphql(db, shop, """{ currentAppInstallation { activeSubscriptions {
-                id name status test lineItems { plan { pricingDetails {
-                  ... on AppRecurringPricing { interval price { amount currencyCode } }
-                } } }
-            } } }""")
-            installation = data.get("currentAppInstallation")
-            if installation is None:
-                raise HTTPException(502, "Shopify installation could not be verified")
-        except HTTPException as exc:
-            if not allow_partial:
-                raise
-            warnings.append({"shop_id": shop.id, "shop_domain": shop.shop_domain,
-                             "message": str(exc.detail)})
-            # Keep subscription identifiers for later verification/cancellation,
-            # but never grant access from an unverified store.
-            continue
-        verified.append(shop)
-        shop.plan_name = "free"
-        shop.subscription_status = "none"
-        shop.subscription_id = None
-        for subscription in installation["activeSubscriptions"]:
-            for key in ("pro", "growth"):
-                lines = subscription.get("lineItems", [])
-                pricing = lines[0]["plan"]["pricingDetails"] if len(lines) == 1 else {}
-                price = pricing.get("price", {})
-                if (subscription["status"] == "ACTIVE" and subscription["name"] == f"AliSync {PLANS[key]['name']}"
-                        and (not subscription.get("test") or get_settings().SHOPIFY_BILLING_TEST)
-                        and pricing.get("interval") == "EVERY_30_DAYS"
-                        and price.get("currencyCode") == "USD"
-                        and float(price.get("amount", -1)) == PLANS[key]["price"]):
-                    shop.plan_name = key
-                    shop.subscription_id = subscription["id"]
-                    shop.subscription_status = "active"
-    user.selected_plan = max((s.plan_name or "free" for s in verified),
-                             key=lambda p: PLANS.get(p, PLANS["free"])["price"], default="free")
-    user.subscription_status = "active" if user.selected_plan != "free" else "none"
+def reconcile(db, shop, *, allow_partial=False):
+    """Shopify billing belongs to the selected installation, never the account."""
+    if shop.shopify_client_id and shop.shopify_client_id != get_settings().SHOPIFY_CLIENT_ID:
+        raise HTTPException(409, "Reconnect this store using the AliSync Partner app")
+    if not shop.is_active or not shop.access_token:
+        raise HTTPException(409, "Reconnect this Shopify store to verify billing")
+    try:
+        data = graphql(db, shop, """{ currentAppInstallation { activeSubscriptions {
+            id name status test lineItems { plan { pricingDetails {
+              ... on AppRecurringPricing { interval price { amount currencyCode } }
+            } } }
+        } } }""")
+        installation = data.get("currentAppInstallation")
+        if installation is None:
+            raise HTTPException(502, "Shopify installation could not be verified")
+    except HTTPException as exc:
+        shop.subscription_status = "unverified"
+        db.commit()
+        if not allow_partial:
+            raise
+        return [{"shop_id": shop.id, "shop_domain": shop.shop_domain, "message": str(exc.detail)}]
+    shop.plan_name = "free"
+    shop.subscription_status = "none"
+    shop.subscription_id = None
+    for subscription in installation["activeSubscriptions"]:
+        # Retain unknown live charges so choosing Free can still cancel them.
+        if subscription.get("status") == "ACTIVE":
+            shop.subscription_id = subscription["id"]
+            shop.subscription_status = "unrecognized"
+        for key in ("pro", "growth"):
+            lines = subscription.get("lineItems", [])
+            pricing = lines[0]["plan"]["pricingDetails"] if len(lines) == 1 else {}
+            price = pricing.get("price", {})
+            if (subscription["status"] == "ACTIVE" and subscription["name"] == f"AliSync {PLANS[key]['name']}"
+                    and (not subscription.get("test") or get_settings().SHOPIFY_BILLING_TEST)
+                    and pricing.get("interval") == "EVERY_30_DAYS"
+                    and price.get("currencyCode") == "USD"
+                    and float(price.get("amount", -1)) == PLANS[key]["price"]):
+                shop.plan_name = key
+                shop.subscription_id = subscription["id"]
+                shop.subscription_status = "active"
     db.commit()
-    return warnings
+    return []
 
 
 def select_plan(db, user, shop, plan):
+    if shop.user_id != user.id:
+        raise HTTPException(404, "Store not found")
+    if plan not in PLANS:
+        raise HTTPException(400, "Unknown subscription plan")
     if shop.shopify_client_id and shop.shopify_client_id != get_settings().SHOPIFY_CLIENT_ID:
         raise HTTPException(409, "Reconnect this store using the AliSync Partner app before changing plans")
-    reconcile(db, user)
+    reconcile(db, shop)
     if plan == "free":
-        # Plans cover the account: cancel every billed store before downgrading.
-        for billed in db.query(Shop).filter_by(user_id=user.id, is_active=True).all():
-            if billed.shopify_client_id and billed.shopify_client_id != get_settings().SHOPIFY_CLIENT_ID:
-                continue
-            if billed.subscription_id:
-                result = graphql(db, billed, """mutation($id: ID!) {
-                    appSubscriptionCancel(id: $id) { userErrors { message } }
-                }""", {"id": billed.subscription_id})["appSubscriptionCancel"]
-                if result["userErrors"]:
-                    raise HTTPException(409, billing_error(result["userErrors"], "Shopify could not cancel the subscription. Please retry."))
-        reconcile(db, user)
-        return {"plan": user.selected_plan, "message": "Subscription updated", "payment_required": False}
+        if shop.subscription_id:
+            result = graphql(db, shop, """mutation($id: ID!) {
+                appSubscriptionCancel(id: $id) { userErrors { message } }
+            }""", {"id": shop.subscription_id})["appSubscriptionCancel"]
+            if result["userErrors"]:
+                raise HTTPException(409, billing_error(result["userErrors"], "Shopify could not cancel the subscription. Please retry."))
+        reconcile(db, shop)
+        return {"plan": shop.plan_name, "message": "Subscription updated for this store", "payment_required": False}
     if not get_settings().BILLING_ENABLED:
         raise HTTPException(503, "Paid plans are temporarily unavailable")
-    if user.selected_plan == plan:
+    if shop.plan_name == plan:
         return {"plan": plan, "message": "Plan already active", "payment_required": False}
-    other = next((candidate for candidate in db.query(Shop).filter(
-        Shop.user_id == user.id, Shop.id != shop.id,
-        Shop.subscription_status == "active").all()
-        if not candidate.shopify_client_id or candidate.shopify_client_id == get_settings().SHOPIFY_CLIENT_ID), None)
-    if other:
-        raise HTTPException(409, "Change your plan from the store where your subscription was approved")
     settings = get_settings()
     if not settings.SHOPIFY_CLIENT_ID:
         raise HTTPException(503, "Shopify billing is not configured")
@@ -136,5 +120,5 @@ def select_plan(db, user, shop, plan):
             "interval": "EVERY_30_DAYS"}}}]})["appSubscriptionCreate"]
     if result["userErrors"] or not result.get("confirmationUrl"):
         raise HTTPException(409, billing_error(result["userErrors"], "Shopify returned no charge approval URL. Please retry."))
-    return {"plan": user.selected_plan, "confirmation_url": result["confirmationUrl"],
+    return {"plan": shop.plan_name, "confirmation_url": result["confirmationUrl"],
             "payment_required": True, "message": "Approve your plan in Shopify"}

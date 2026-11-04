@@ -337,8 +337,8 @@ def google_callback(request: Request, code: str | None = None, state: str | None
 def me(user: User = Depends(current_user)):
     return {"id": user.id, "email": user.email, "full_name": user.full_name,
             "contact_number": user.contact_number, "email_verified": user.email_verified is not False,
-            "selected_plan": plan_name(user) if user.selected_plan else None,
-            "subscription_status": user.subscription_status or "none"}
+            "selected_plan": None,
+            "subscription_status": "per_store"}
 
 
 @router.post("/subscription/select")
@@ -747,29 +747,31 @@ def sync_logs(limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_db
 
 
 @router.get("/subscription/entitlements")
-def subscription_entitlements(db: Session = Depends(get_db), user: User = Depends(current_user)):
+def subscription_entitlements(db: Session = Depends(get_db), user: User = Depends(current_user),
+                             shop: Shop = Depends(get_current_shop)):
     from .billing import reconcile
-    warnings = reconcile(db, user, allow_partial=True)
-    return {**subscription_summary(db, user), "billing_warnings": warnings}
+    warnings = reconcile(db, shop, allow_partial=True)
+    return {**subscription_summary(db, user, shop), "billing_warnings": warnings}
 
 
 @router.post("/subscription/products/{entity_type}/{entity_id}/access")
 def set_full_product_access(entity_type: str, entity_id: int, payload: dict,
-                            db: Session = Depends(get_db), user: User = Depends(current_user)):
+                            db: Session = Depends(get_db), user: User = Depends(current_user),
+                            shop: Shop = Depends(get_current_shop)):
     if entity_type not in {"imported", "mapping"}:
         raise HTTPException(400, "Invalid product type")
     if not isinstance(payload.get("enabled"), bool):
         raise HTTPException(400, "enabled must be true or false")
     owner = account(db, user.id, lock=True)
-    if plan_name(owner) != "growth":
+    if plan_name(shop) != "growth":
         raise HTTPException(400, "Choose your 5 full-access products on Growth. Free includes its first 5 products automatically; Pro includes every product.")
     model = Product if entity_type == "imported" else Mapping
-    entity = db.query(model).filter_by(id=entity_id, user_id=user.id).first()
+    entity = db.query(model).filter_by(id=entity_id, user_id=user.id, shop_id=shop.id).first()
     if not entity: raise HTTPException(404, "Product not found")
     from .subscriptions import hydrate, FULL_LIMIT
     hydrate(db, user.id)
     row = db.query(PlanProduct).filter_by(user_id=user.id, shop_id=entity.shop_id, aliexpress_id=entity.aliexpress_id).with_for_update().one()
-    if payload["enabled"] and not row.full_access and len(db.query(PlanProduct).filter_by(user_id=user.id, full_access=True).with_for_update().all()) >= 5:
+    if payload["enabled"] and not row.full_access and len(db.query(PlanProduct).filter_by(user_id=user.id, shop_id=shop.id, full_access=True).with_for_update().all()) >= 5:
         raise HTTPException(403, FULL_LIMIT)
     row.full_access = payload["enabled"]
     db.commit()

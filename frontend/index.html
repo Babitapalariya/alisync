@@ -510,7 +510,7 @@
 
 <div class="page plans-page" id="pg-plans">
   <div class="pricing-wrap">
-    <div class="pricing-head"><div class="auth-logo"><span><i class="ti ti-package-import"></i></span> AliSync</div><h1>Choose the plan that fits you</h1><p>Choose the features you need. Paid plans require your approval in Shopify before activation.</p></div>
+    <div class="pricing-head"><div class="auth-logo"><span><i class="ti ti-package-import"></i></span> AliSync</div><h1>Choose the plan that fits you</h1><p>Plans and product limits apply separately to each store. Paid plans require your approval in Shopify before activation.</p></div>
     <div id="subscription-summary" class="info-banner plan-usage" style="margin-bottom:18px">Loading plan usage...</div>
     <div class="plan-grid" id="subscription-plan-cards"></div>
     <p id="plan-selection-message" role="status" aria-live="polite"></p>
@@ -1111,14 +1111,16 @@
   }
   let subscriptionState=null;
   async function loadSubscription(){
+    const requestedShop=activeShopId;subscriptionState=null;
+    if(!requestedShop){document.getElementById('subscription-summary').textContent='Select a store to view its plan.';document.getElementById('subscription-plan-cards').innerHTML='';return null}
     try{
-      const data=await tenantJson('/subscription/entitlements');subscriptionState=data;tenantSelectedPlan=data.plan;
+      const data=await tenantJson('/subscription/entitlements');if(activeShopId!==requestedShop)return null;subscriptionState=data;tenantSelectedPlan=data.plan;document.querySelector('.sb-urole').textContent=data.limits.name+' plan';
       const limit=data.limits.max_imported_products,used=data.usage.sourced_products;
       const accessText=data.plan==='free'?`${data.usage.full_feature_products} / 5 first products with full Pro access`:data.plan==='growth'?`${data.usage.full_feature_products} / 5 full-access products selected`:'Full access for all products';
-      document.getElementById('subscription-summary').innerHTML=`<i class="ti ti-bulb" aria-hidden="true"></i><span>${escapeHtml(data.limits.name)} plan &middot; ${used}${limit===null?' products sourced':` / ${limit} products sourced`} &middot; ${accessText} &middot; ${data.billing_enabled?'Billing enabled':'No payment collected.'}</span>`;
+      document.getElementById('subscription-summary').innerHTML=`<i class="ti ti-bulb" aria-hidden="true"></i><span>${escapeHtml(data.shop_domain)} &middot; ${escapeHtml(data.limits.name)} plan &middot; ${used}${limit===null?' products sourced':` / ${limit} products sourced`} &middot; ${accessText} &middot; ${data.billing_enabled?'Billing enabled':'No payment collected.'}</span>`;
       if(data.billing_warnings?.length){
         const warning=document.createElement('div');
-        warning.textContent='Some store billing could not be verified. Access shown uses verified stores only. Plan changes require verification. '+data.billing_warnings.map(item=>item.shop_domain+': '+item.message).join(' ');
+        warning.textContent='Billing for this store could not be verified. Paid access requires verification. '+data.billing_warnings.map(item=>item.shop_domain+': '+item.message).join(' ');
         document.getElementById('subscription-summary').appendChild(warning);
       }
       const feature=(icon,text,note='',highlight=false,muted=false)=>`<li class="${highlight?'plan-highlight':''} ${muted?'plan-muted':''}"><span class="plan-feature-icon"><i class="ti ${icon}" aria-hidden="true"></i></span><div>${text}${note?`<small>${note}</small>`:''}</div></li>`;
@@ -1128,9 +1130,9 @@
         growth:feature('ti-infinity','<strong>Unlimited</strong> AliExpress product sourcing and Shopify imports')+feature('ti-link','<strong>Unlimited</strong> mapping for existing Shopify products and variants')+feature('ti-crown','<strong>Full Pro features on 5 products of your choice</strong>',automation,true)+feature('ti-refresh','<strong>Relink suppliers anytime</strong>','without rebuilding your Shopify product'),
         pro:feature('ti-circle-check-filled','<strong>Unlimited</strong> sourcing, imports and mapping')+feature('ti-circle-check-filled','<strong>Full Pro features for all products</strong>',automation)+feature('ti-circle-check-filled','Automatic and manual price updates')+feature('ti-circle-check-filled','Inventory, out-of-stock and dead-link monitoring')+feature('ti-circle-check-filled','Supplier relinking and inventory synchronization')};
       const descriptions={free:'Start free with 25 products and unlock full Pro features on your first 5 products.',growth:'Build without limits &mdash; source, import and map unlimited products, with full Pro features on 5 products of your choice.',pro:'Everything included &mdash; unlimited sourcing, mapping, pricing and inventory automation for all your products.'};
-      document.getElementById('subscription-plan-cards').innerHTML=Object.entries(data.plans).map(([key,plan])=>`<article class="plan-card plan-${key} ${key==='pro'?'featured':''}">${key==='pro'?'<div class="plan-tag"><i class="ti ti-star-filled" aria-hidden="true"></i> Most Popular</div>':''}<div class="plan-top"><div class="plan-name">${plan.name.toUpperCase()}</div><span class="plan-symbol"><i class="ti ${key==='free'?'ti-shopping-bag':key==='growth'?'ti-chart-bar':'ti-crown'}" aria-hidden="true"></i></span></div><div class="plan-desc">${descriptions[key]}</div><div class="plan-price">$${plan.price} <small>/month</small></div><ul>${features[key]}</ul><div class="plan-footer"><button class="btn plan-choice" ${data.plan===key?'disabled':''} onclick="selectPlan('${key}')">${data.plan===key?'Current plan':key==='free'?'Start Free':`Choose ${plan.name}`}</button></div></article>`).join('');
+      document.getElementById('subscription-plan-cards').innerHTML=Object.entries(data.plans).map(([key,plan])=>`<article class="plan-card plan-${key} ${key==='pro'?'featured':''}">${key==='pro'?'<div class="plan-tag"><i class="ti ti-star-filled" aria-hidden="true"></i> Most Popular</div>':''}<div class="plan-top"><div class="plan-name">${plan.name.toUpperCase()}</div><span class="plan-symbol"><i class="ti ${key==='free'?'ti-shopping-bag':key==='growth'?'ti-chart-bar':'ti-crown'}" aria-hidden="true"></i></span></div><div class="plan-desc">${descriptions[key]}</div><div class="plan-price">$${plan.price} <small>/month</small></div><ul>${features[key]}</ul><div class="plan-footer"><button class="btn plan-choice" ${data.plan===key&&!['unverified','unrecognized'].includes(data.status)?'disabled':''} onclick="selectPlan('${key}')">${data.plan===key&&!['unverified','unrecognized'].includes(data.status)?'Current plan':key==='free'?'Choose Free':`Choose ${plan.name}`}</button></div></article>`).join('');
       return data;
-    }catch(error){document.getElementById('subscription-summary').textContent='Could not load plan access: '+error.message;return null}
+    }catch(error){if(activeShopId!==requestedShop)return null;subscriptionState=null;document.getElementById('subscription-plan-cards').innerHTML='';document.getElementById('subscription-summary').textContent='Could not load plan access: '+error.message;return null}
   }
   async function setProductAccess(source,id,enabled,button){
     button.disabled=true;
@@ -1140,6 +1142,7 @@
   }
   function productHasFullAccess(source,id){
     if(!subscriptionState)return false;
+    if(String(subscriptionState.shop_id)!==String(activeShopId))return false;
     if(subscriptionState.plan==='pro')return true;
     return !!subscriptionState.products.find(p=>p.source===source&&String(p.id)===String(id)&&String(p.shop_id)===String(activeShopId))?.full_access;
   }
@@ -1185,7 +1188,7 @@
       try{await connectEmbeddedShop();}
       catch(error){document.getElementById("tenant-gate").style.display="flex";tenantMessage("tenant-auth-message",error.message);return;}
     }
-    try{const me=await tenantJson("/auth/me");if(!me.email_verified){tenantToken="";sessionStorage.removeItem("alisync_token");document.getElementById("tenant-gate").style.display="flex";showVerification(me.email);return}tenantSelectedPlan=me.selected_plan||null;await loadSubscription();tenantShops=await tenantJson("/shops");if(!tenantShops.some(shop=>String(shop.id)===activeShopId)){activeShopId="";sessionStorage.removeItem("alisync_shop_id");clearMappingView()}document.querySelector(".sb-uname").textContent=me.full_name||me.email;document.querySelector(".sb-urole").textContent=tenantSelectedPlan?`${tenantSelectedPlan.charAt(0).toUpperCase()+tenantSelectedPlan.slice(1)} plan`:"Account setup";if(!activeShopId&&tenantShops.length===1){activeShopId=String(tenantShops[0].id);sessionStorage.setItem("alisync_shop_id",activeShopId)}renderShopSelectors();enterAdminWithoutConnections()}
+    try{const me=await tenantJson("/auth/me");if(!me.email_verified){tenantToken="";sessionStorage.removeItem("alisync_token");document.getElementById("tenant-gate").style.display="flex";showVerification(me.email);return}tenantSelectedPlan=null;tenantShops=await tenantJson("/shops");if(!tenantShops.some(shop=>String(shop.id)===activeShopId)){activeShopId="";sessionStorage.removeItem("alisync_shop_id");clearMappingView()}document.querySelector(".sb-uname").textContent=me.full_name||me.email;document.querySelector(".sb-urole").textContent=tenantSelectedPlan?`${tenantSelectedPlan.charAt(0).toUpperCase()+tenantSelectedPlan.slice(1)} plan`:"Account setup";if(!activeShopId&&tenantShops.length===1){activeShopId=String(tenantShops[0].id);sessionStorage.setItem("alisync_shop_id",activeShopId)}renderShopSelectors();await loadSubscription();enterAdminWithoutConnections()}
     catch(e){tenantToken="";sessionStorage.removeItem("alisync_token");document.getElementById("pg-plans").classList.remove("active");document.getElementById("tenant-gate").style.display="flex";document.getElementById("account-panel").style.display="block";document.getElementById("shop-panel").style.display="none";showAuthView("login");tenantMessage("tenant-auth-message",e.message)}
   }
   function continueToDashboard(){
@@ -1198,14 +1201,12 @@
     goPage("dashboard",null);loadNotificationSummary();
   }
   function enterAdminWithoutConnections(){
-    connectionOnboardingActive=true;connectionStatus=null;
+    connectionOnboardingActive=false;connectionStatus=null;
     document.getElementById("tenant-gate").style.display="none";
-    document.getElementById("pg-plans").classList.remove("active");
+    document.getElementById("connection-onboarding").style.display="none";
     document.getElementById("admin").classList.add("show");
-    document.getElementById("connection-onboarding").style.display="flex";
-    document.getElementById("onboarding-continue-btn").disabled=true;
-    document.getElementById("onboarding-continue-btn").innerHTML=`${tenantSelectedPlan?"Continue to dashboard":"Continue to plans"} <i class="ti ti-arrow-right"></i>`;
-    document.getElementById("onboarding-description").textContent=tenantSelectedPlan?"Connect Shopify and AliExpress, then continue to your dashboard.":"Connect Shopify and AliExpress first, then choose your plan.";
+    goPage("dashboard",null);
+    loadNotificationSummary();
     refreshConnectionStatus();
   }
   async function refreshConnectionStatus(){
@@ -1291,7 +1292,8 @@
     catch(e){error.textContent=e.message;btn.disabled=false;btn.innerHTML=`<i class="ti ti-plug-connected"></i> Connect AliExpress`}
   }
   function renderShopSelectors(){
-    const options=tenantShops.length?tenantShops.map(s=>`<option value="${s.id}">${escapeHtml(s.shop_domain)}${s.connected?"":" (not connected)"}</option>`).join(""):"<option value=''>No stores yet</option>";
+    const visibleShops=shopifyEmbedded?tenantShops.filter(s=>String(s.id)===String(activeShopId)):tenantShops;
+    const options=visibleShops.length?visibleShops.map(s=>`<option value="${s.id}">${escapeHtml(s.shop_domain)}${s.connected?"":" (not connected)"}</option>`).join(""):"<option value=''>No stores yet</option>";
     document.getElementById("tenant-shop-select").innerHTML=options;document.getElementById("active-shop-select").innerHTML=options;
     if(activeShopId){document.getElementById("tenant-shop-select").value=activeShopId;document.getElementById("active-shop-select").value=activeShopId}
   }
@@ -1310,7 +1312,7 @@
   function useSelectedShop(){const id=document.getElementById("tenant-shop-select").value;if(id)activateTenantShop(id);else tenantMessage("tenant-shop-message","Add a Shopify store first.")}
   async function activateTenantShop(id){
     clearMappingView();activeShopId=String(id);sessionStorage.setItem("alisync_shop_id",activeShopId);renderShopSelectors();let shop=tenantShops.find(s=>String(s.id)===activeShopId);if(!shop)return;
-    enterAdminWithoutConnections();loadMappings(1);
+    await loadSubscription();enterAdminWithoutConnections();loadMappings(1);
   }
   function switchActiveShop(id){activeShopId=String(id);sessionStorage.setItem("alisync_shop_id",activeShopId);location.reload()}
   function openShopManager(){document.getElementById("tenant-gate").style.display="flex";document.getElementById("account-panel").style.display="none";document.getElementById("shop-panel").style.display="block";renderShopSelectors()}

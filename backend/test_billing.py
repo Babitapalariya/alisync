@@ -44,47 +44,47 @@ class BillingTests(unittest.TestCase):
         return {"currentAppInstallation": {"activeSubscriptions": self.subscriptions}}
 
     def test_pending_charge_does_not_grant_access_and_decline_stays_free(self):
-        self.assertEqual(plan_name(self.user), "free")
+        self.assertEqual(plan_name(self.shop), "free")
         result = billing.select_plan(self.db, self.user, self.shop, "growth")
         self.assertTrue(result["payment_required"])
         self.assertIn("confirmation_url", result)
-        self.assertEqual(self.user.selected_plan, "free")
+        self.assertEqual(self.shop.plan_name, "free")
         variables = self.api.call_args.args[3]
         self.assertEqual(variables["items"][0]["plan"]["appRecurringPricingDetails"]["price"]["amount"], 14)
         self.assertFalse(variables["test"])
-        billing.reconcile(self.db, self.user)
-        self.assertEqual(plan_name(self.user), "free")
+        billing.reconcile(self.db, self.shop)
+        self.assertEqual(plan_name(self.shop), "free")
 
     def test_approval_declined_upgrade_and_cancel(self):
         self.subscriptions = [active()]
-        billing.reconcile(self.db, self.user)
-        self.assertEqual(plan_name(self.user), "growth")
+        billing.reconcile(self.db, self.shop)
+        self.assertEqual(plan_name(self.shop), "growth")
         billing.select_plan(self.db, self.user, self.shop, "pro")
-        billing.reconcile(self.db, self.user)
-        self.assertEqual(plan_name(self.user), "growth")
+        billing.reconcile(self.db, self.shop)
+        self.assertEqual(plan_name(self.shop), "growth")
         billing.select_plan(self.db, self.user, self.shop, "free")
-        self.assertEqual(plan_name(self.user), "free")
+        self.assertEqual(plan_name(self.shop), "free")
         self.assertIsNone(self.shop.subscription_id)
 
     def test_reinstall_requires_new_approval(self):
         self.subscriptions = [active()]
-        billing.reconcile(self.db, self.user)
+        billing.reconcile(self.db, self.shop)
         self.subscriptions = []
         result = billing.select_plan(self.db, self.user, self.shop, "growth")
-        self.assertEqual(plan_name(self.user), "free")
+        self.assertEqual(plan_name(self.shop), "free")
         self.assertTrue(result["payment_required"])
 
     def test_wrong_price_inactive_and_test_charges_do_not_unlock_production(self):
         for subscription in (active(amount=1), active(status="PENDING"), active() | {"test": True}):
             self.subscriptions = [subscription]
-            billing.reconcile(self.db, self.user)
-            self.assertEqual(plan_name(self.user), "free")
+            billing.reconcile(self.db, self.shop)
+            self.assertEqual(plan_name(self.shop), "free")
 
     def test_disabled_billing_cannot_grant_paid_access(self):
         self.settings.BILLING_ENABLED = False
         with self.assertRaises(HTTPException):
             billing.select_plan(self.db, self.user, self.shop, "pro")
-        self.assertEqual(plan_name(self.user), "free")
+        self.assertEqual(plan_name(self.shop), "free")
 
     def test_other_app_connection_cannot_block_or_grant_billing(self):
         other = Shop(user_id=self.user.id, shop_domain="old.myshopify.com",
@@ -92,31 +92,11 @@ class BillingTests(unittest.TestCase):
                      plan_name="pro", subscription_status="active")
         self.db.add(other); self.db.commit()
         self.subscriptions = [active()]
-        billing.reconcile(self.db, self.user)
-        self.assertEqual(plan_name(self.user), "growth")
+        billing.reconcile(self.db, self.shop)
+        self.assertEqual(plan_name(self.shop), "growth")
         self.assertEqual(self.api.call_count, 1)
         self.assertEqual(other.access_token, "expired")
 
-    def test_partial_verification_isolates_failed_store_without_granting_access(self):
-        other = Shop(user_id=self.user.id, shop_domain="expired.myshopify.com",
-                     access_token="expired", plan_name="pro", subscription_status="active",
-                     subscription_id="existing-charge")
-        self.db.add(other); self.db.commit()
-        def reply(db, shop, query, variables=None):
-            if shop.id == other.id:
-                raise HTTPException(502, "Shopify authorization expired")
-            return {"currentAppInstallation": {"activeSubscriptions": [active()]}}
-        self.api.side_effect = reply
-        warnings = billing.reconcile(self.db, self.user, allow_partial=True)
-        self.assertEqual(plan_name(self.user), "growth")
-        self.assertEqual(warnings[0]["shop_domain"], other.shop_domain)
-        self.assertEqual(other.subscription_id, "existing-charge")
-        self.assertEqual(other.plan_name, "pro")
-        self.api.reset_mock()
-        with self.assertRaises(HTTPException):
-            billing.select_plan(self.db, self.user, self.shop, "pro")
-        self.assertFalse(any("appSubscriptionCreate" in call.args[2]
-                             for call in self.api.call_args_list))
 
     def test_all_failed_stores_do_not_grant_cached_paid_access(self):
         self.shop.plan_name = "pro"
@@ -125,10 +105,26 @@ class BillingTests(unittest.TestCase):
         self.user.subscription_status = "active"
         self.db.commit()
         self.api.side_effect = HTTPException(502, "Unavailable")
-        warnings = billing.reconcile(self.db, self.user, allow_partial=True)
+        warnings = billing.reconcile(self.db, self.shop, allow_partial=True)
         self.assertEqual(len(warnings), 1)
-        self.assertEqual(plan_name(self.user), "free")
+        self.assertEqual(plan_name(self.shop), "free")
         self.assertEqual(self.shop.subscription_id, "existing-charge")
+
+    def test_other_store_cannot_block_approval_or_be_cancelled(self):
+        other = Shop(user_id=self.user.id, shop_domain="expired.myshopify.com", access_token="expired",
+                     plan_name="pro", subscription_status="active", subscription_id="other-charge")
+        self.db.add(other); self.db.commit()
+        def reply(db, shop, query, variables=None):
+            if shop.id == other.id:
+                raise AssertionError("Billing called another store")
+            return self.graphql(db, shop, query, variables)
+        self.api.side_effect = reply
+        result = billing.select_plan(self.db, self.user, self.shop, "growth")
+        self.assertTrue(result["payment_required"])
+        self.subscriptions = [active()]
+        billing.select_plan(self.db, self.user, self.shop, "free")
+        self.assertEqual(other.subscription_id, "other-charge")
+        self.assertEqual(plan_name(other), "pro")
 
     def test_failed_creation_never_grants_access(self):
         self.api.side_effect = [
@@ -137,17 +133,17 @@ class BillingTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as error:
             billing.select_plan(self.db, self.user, self.shop, "pro")
         self.assertIn("Rejected", error.exception.detail)
-        self.assertEqual(plan_name(self.user), "free")
+        self.assertEqual(plan_name(self.shop), "free")
 
     def test_local_test_charge_requires_approval_then_unlocks(self):
         self.settings.SHOPIFY_BILLING_TEST = True
         result = billing.select_plan(self.db, self.user, self.shop, "growth")
         self.assertTrue(self.api.call_args.args[3]["test"])
         self.assertTrue(result["payment_required"])
-        self.assertEqual(plan_name(self.user), "free")
+        self.assertEqual(plan_name(self.shop), "free")
         self.subscriptions = [active() | {"test": True}]
-        billing.reconcile(self.db, self.user)
-        self.assertEqual(plan_name(self.user), "growth")
+        billing.reconcile(self.db, self.shop)
+        self.assertEqual(plan_name(self.shop), "growth")
 
     def test_failed_cancellation_preserves_paid_access(self):
         self.api.side_effect = [
@@ -155,7 +151,7 @@ class BillingTests(unittest.TestCase):
             {"appSubscriptionCancel": {"userErrors": [{"message": "Rejected"}]}}]
         with self.assertRaises(HTTPException):
             billing.select_plan(self.db, self.user, self.shop, "free")
-        self.assertEqual(plan_name(self.user), "growth")
+        self.assertEqual(plan_name(self.shop), "growth")
 
 
 if __name__ == "__main__":

@@ -28,7 +28,7 @@ class SubscriptionTests(unittest.TestCase):
         self.engine.dispose()
 
     def select(self, plan):
-        user = self.db.get(User, 1); user.selected_plan = plan; user.subscription_status = "active"; self.db.commit()
+        self.shop.plan_name = plan; self.shop.subscription_status = "active"; self.db.commit()
 
     def add(self, number, mapping=False, shop=None):
         shop = shop or self.shop
@@ -42,17 +42,19 @@ class SubscriptionTests(unittest.TestCase):
         source = Path(__file__).parent / "alisync_app/routes.py"
         tree = ast.parse(source.read_text(encoding="utf-8"))
         node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "set_full_product_access")
-        ns = dict(policy.__dict__, __name__="alisync_app.routes", __package__="alisync_app", router=APIRouter(), Depends=Depends, Session=Session, current_user=lambda:None, get_db=lambda:None)
+        ns = dict(policy.__dict__, __name__="alisync_app.routes", __package__="alisync_app", router=APIRouter(), Depends=Depends, Session=Session, current_user=lambda:None, get_db=lambda:None, Shop=Shop, get_current_shop=lambda:None)
         exec(compile(ast.Module(body=[node],type_ignores=[]),str(source),"exec"),ns)
         return ns[node.name]
 
-    def test_free_quota_includes_all_stores_and_repeat_is_idempotent(self):
+    def test_free_quota_is_per_store_and_repeat_is_idempotent(self):
         for i in range(25): policy.reserve_product(self.db,self.shop,str(i))
         policy.reserve_product(self.db,self.shop,"0")
-        with self.assertRaises(HTTPException) as error: policy.reserve_product(self.db,self.db.get(Shop,2),"26")
+        with self.assertRaises(HTTPException) as error: policy.reserve_product(self.db,self.shop,"26")
         self.assertEqual(error.exception.status_code,403)
         self.assertEqual(error.exception.detail,policy.FREE_LIMIT)
         self.db.rollback()
+        policy.reserve_product(self.db,self.db.get(Shop,2),"26")
+        self.assertTrue(policy.has_full_access(self.db,self.db.get(Shop,2),"26"))
         policy.reserve_product(self.db,self.db.get(Shop,3),"26")
 
     def test_growth_user_chooses_five_and_can_release(self):
@@ -60,14 +62,14 @@ class SubscriptionTests(unittest.TestCase):
         rows=[self.add(i) for i in range(6)]
         endpoint=self.access_endpoint();user=self.db.get(User,1)
         self.assertFalse(policy.has_full_access(self.db,self.shop,"0"))
-        for row in rows[:5]: endpoint("imported",row.id,{"enabled":True},self.db,user)
-        with self.assertRaises(HTTPException) as error: endpoint("imported",rows[5].id,{"enabled":True},self.db,user)
+        for row in rows[:5]: endpoint("imported",row.id,{"enabled":True},self.db,user,self.shop)
+        with self.assertRaises(HTTPException) as error: endpoint("imported",rows[5].id,{"enabled":True},self.db,user,self.shop)
         self.assertEqual(error.exception.detail,policy.FULL_LIMIT);self.db.rollback()
-        endpoint("imported",rows[0].id,{"enabled":False},self.db,user)
-        endpoint("imported",rows[5].id,{"enabled":True},self.db,user)
+        endpoint("imported",rows[0].id,{"enabled":False},self.db,user,self.shop)
+        endpoint("imported",rows[5].id,{"enabled":True},self.db,user,self.shop)
         self.assertTrue(policy.has_full_access(self.db,self.shop,"5"))
         self.assertFalse(policy.has_full_access(self.db,self.shop,"0"))
-        with self.assertRaises(HTTPException): endpoint("imported",rows[0].id,{"enabled":True},self.db,self.db.get(User,2))
+        with self.assertRaises(HTTPException): endpoint("imported",rows[0].id,{"enabled":True},self.db,self.db.get(User,2),self.db.get(Shop,3))
 
     def test_free_mapping_and_first_five_access(self):
         for i in range(25): self.add(i,mapping=True)
@@ -90,6 +92,16 @@ class SubscriptionTests(unittest.TestCase):
         self.assertFalse(policy.has_full_access(self.db,self.shop,"29"))
         self.assertEqual(self.db.query(Product).count(),29)
         with self.assertRaises(HTTPException): policy.reserve_product(self.db,self.shop,"30")
+
+    def test_pro_store_does_not_grant_other_store_access(self):
+        self.select("pro")
+        other = self.db.get(Shop, 2)
+        for i in range(6): self.add(i, shop=other)
+        self.assertFalse(policy.has_full_access(self.db, other, "5"))
+        summary = policy.subscription_summary(self.db, self.db.get(User, 1), other)
+        self.assertEqual(summary["plan"], "free")
+        self.assertEqual(summary["usage"]["sourced_products"], 6)
+        self.assertTrue(all(p["shop_id"] == other.id for p in summary["products"]))
 
     def test_relink_preserves_selected_slot(self):
         self.add(1,mapping=True)

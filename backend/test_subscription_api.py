@@ -47,8 +47,8 @@ class SubscriptionApiTests(unittest.TestCase):
 
     def approve_plan(self, plan):
         # Entitlement tests start after Shopify approval. Billing is tested separately.
-        self.user.selected_plan = plan
-        self.user.subscription_status = "active"
+        self.shop.plan_name = plan
+        self.shop.subscription_status = "active"
         self.db.commit()
 
     def test_entitlements_still_returns_plans_when_a_store_cannot_be_verified(self):

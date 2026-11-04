@@ -118,3 +118,9 @@ python -m unittest test_subscriptions test_subscription_api test_mapping_prices 
 ```
 
 The bundled `iop/test_get.py` is an external SDK sample, not an offline application test.
+
+### Per-store billing
+
+Each Shopify store has its own plan, Free product quota, and Growth access slots. Account-level legacy plan fields no longer grant access. Embedded requests are restricted to the store in the verified Shopify session; standalone requests still allow selecting an owned store. Plan approval, cancellation, and billing verification affect only the selected store.
+
+Deploy backend and frontend together and deploy `shopify.app.toml` to register `app_subscriptions/update`. Restart the backend if automatic reload is disabled. Existing subscriptions remain attached to their original store; other stores require separate approval. Verify approve/decline/upgrade/cancel with Shopify test billing on two development stores before production. Automated tests mock Shopify and do not verify merchant approval or webhook delivery.
