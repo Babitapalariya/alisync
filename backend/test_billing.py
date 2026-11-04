@@ -97,6 +97,39 @@ class BillingTests(unittest.TestCase):
         self.assertEqual(self.api.call_count, 1)
         self.assertEqual(other.access_token, "expired")
 
+    def test_partial_verification_isolates_failed_store_without_granting_access(self):
+        other = Shop(user_id=self.user.id, shop_domain="expired.myshopify.com",
+                     access_token="expired", plan_name="pro", subscription_status="active",
+                     subscription_id="existing-charge")
+        self.db.add(other); self.db.commit()
+        def reply(db, shop, query, variables=None):
+            if shop.id == other.id:
+                raise HTTPException(502, "Shopify authorization expired")
+            return {"currentAppInstallation": {"activeSubscriptions": [active()]}}
+        self.api.side_effect = reply
+        warnings = billing.reconcile(self.db, self.user, allow_partial=True)
+        self.assertEqual(plan_name(self.user), "growth")
+        self.assertEqual(warnings[0]["shop_domain"], other.shop_domain)
+        self.assertEqual(other.subscription_id, "existing-charge")
+        self.assertEqual(other.plan_name, "pro")
+        self.api.reset_mock()
+        with self.assertRaises(HTTPException):
+            billing.select_plan(self.db, self.user, self.shop, "pro")
+        self.assertFalse(any("appSubscriptionCreate" in call.args[2]
+                             for call in self.api.call_args_list))
+
+    def test_all_failed_stores_do_not_grant_cached_paid_access(self):
+        self.shop.plan_name = "pro"
+        self.shop.subscription_id = "existing-charge"
+        self.shop.subscription_status = "active"
+        self.user.subscription_status = "active"
+        self.db.commit()
+        self.api.side_effect = HTTPException(502, "Unavailable")
+        warnings = billing.reconcile(self.db, self.user, allow_partial=True)
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(plan_name(self.user), "free")
+        self.assertEqual(self.shop.subscription_id, "existing-charge")
+
     def test_failed_creation_never_grants_access(self):
         self.api.side_effect = [
             {"currentAppInstallation": {"activeSubscriptions": []}},

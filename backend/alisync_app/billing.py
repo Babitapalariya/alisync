@@ -38,7 +38,9 @@ def graphql(db, shop, query, variables=None):
     return body["data"]
 
 
-def reconcile(db, user):
+def reconcile(db, user, *, allow_partial=False):
+    warnings = []
+    verified = []
     shops = db.query(Shop).filter_by(user_id=user.id).all()
     # Tokens issued to another app cannot verify this app's subscription.
     shops = [shop for shop in shops if not shop.shopify_client_id
@@ -49,14 +51,24 @@ def reconcile(db, user):
             shop.subscription_status = "none"
             shop.subscription_id = None
             continue
-        data = graphql(db, shop, """{ currentAppInstallation { activeSubscriptions {
-            id name status test lineItems { plan { pricingDetails {
-              ... on AppRecurringPricing { interval price { amount currencyCode } }
-            } } }
-        } } }""")
-        installation = data.get("currentAppInstallation")
-        if installation is None:
-            raise HTTPException(502, "Shopify installation could not be verified")
+        try:
+            data = graphql(db, shop, """{ currentAppInstallation { activeSubscriptions {
+                id name status test lineItems { plan { pricingDetails {
+                  ... on AppRecurringPricing { interval price { amount currencyCode } }
+                } } }
+            } } }""")
+            installation = data.get("currentAppInstallation")
+            if installation is None:
+                raise HTTPException(502, "Shopify installation could not be verified")
+        except HTTPException as exc:
+            if not allow_partial:
+                raise
+            warnings.append({"shop_id": shop.id, "shop_domain": shop.shop_domain,
+                             "message": str(exc.detail)})
+            # Keep subscription identifiers for later verification/cancellation,
+            # but never grant access from an unverified store.
+            continue
+        verified.append(shop)
         shop.plan_name = "free"
         shop.subscription_status = "none"
         shop.subscription_id = None
@@ -73,10 +85,11 @@ def reconcile(db, user):
                     shop.plan_name = key
                     shop.subscription_id = subscription["id"]
                     shop.subscription_status = "active"
-    user.selected_plan = max((s.plan_name or "free" for s in shops),
+    user.selected_plan = max((s.plan_name or "free" for s in verified),
                              key=lambda p: PLANS.get(p, PLANS["free"])["price"], default="free")
     user.subscription_status = "active" if user.selected_plan != "free" else "none"
     db.commit()
+    return warnings
 
 
 def select_plan(db, user, shop, plan):

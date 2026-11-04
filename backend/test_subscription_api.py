@@ -5,7 +5,7 @@ import math
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -50,6 +50,17 @@ class SubscriptionApiTests(unittest.TestCase):
         self.user.selected_plan = plan
         self.user.subscription_status = "active"
         self.db.commit()
+
+    def test_entitlements_still_returns_plans_when_a_store_cannot_be_verified(self):
+        self.shop.access_token = "expired"
+        self.db.commit()
+        with patch("alisync_app.billing.graphql", side_effect=HTTPException(502, "Authorization expired")):
+            response = self.client.get("/subscription/entitlements")
+        self.assertEqual(response.status_code, 200, response.text)
+        data = response.json()
+        self.assertEqual(data["plan"], "free")
+        self.assertEqual(set(data["plans"]), {"free", "growth", "pro"})
+        self.assertEqual(data["billing_warnings"][0]["shop_domain"], self.shop.shop_domain)
 
     def test_free_basic_actions_block_before_supplier_calls(self):
         for i in range(6): policy.reserve_product(self.db,self.shop,str(200+i))

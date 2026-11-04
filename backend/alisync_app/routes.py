@@ -749,8 +749,8 @@ def sync_logs(limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_db
 @router.get("/subscription/entitlements")
 def subscription_entitlements(db: Session = Depends(get_db), user: User = Depends(current_user)):
     from .billing import reconcile
-    reconcile(db, user)
-    return subscription_summary(db, user)
+    warnings = reconcile(db, user, allow_partial=True)
+    return {**subscription_summary(db, user), "billing_warnings": warnings}
 
 
 @router.post("/subscription/products/{entity_type}/{entity_id}/access")
