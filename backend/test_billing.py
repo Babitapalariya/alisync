@@ -29,8 +29,52 @@ class BillingTests(unittest.TestCase):
         self.db.add(self.shop); self.db.commit()
         self.subscriptions = []
         self.api = self.enterContext(patch.object(billing, "graphql", side_effect=self.graphql))
-        self.settings = SimpleNamespace(BILLING_ENABLED=True, SHOPIFY_BILLING_TEST=False, SHOPIFY_CLIENT_ID="app")
+        self.settings = SimpleNamespace(SHOPIFY_BILLING_MODE="manual", BILLING_ENABLED=True, SHOPIFY_BILLING_TEST=False, SHOPIFY_CLIENT_ID="app")
         self.enterContext(patch.object(billing, "get_settings", return_value=self.settings))
+
+    def managed_settings(self):
+        self.settings.SHOPIFY_BILLING_MODE = "app_pricing"
+        self.settings.SHOPIFY_APP_HANDLE = "alisync-1"
+        self.settings.SHOPIFY_PARTNER_ID = "123"
+        self.settings.SHOPIFY_PARTNER_ACCESS_TOKEN = "test-token"
+        self.settings.SHOPIFY_APP_GID = "gid://shopify/App/99"
+        self.settings.SHOPIFY_GROWTH_PLAN_HANDLE = "growth"
+        self.settings.SHOPIFY_PRO_PLAN_HANDLE = "pro"
+
+    def test_managed_selection_redirects_without_creating_or_cancelling_charges(self):
+        self.managed_settings()
+        with patch.object(billing, "managed_subscription", return_value=None):
+            for plan in ("growth", "pro", "free"):
+                result = billing.select_plan(self.db, self.user, self.shop, plan)
+                self.assertEqual(result["confirmation_url"], "https://admin.shopify.com/store/test/charges/alisync-1/pricing_plans")
+                self.assertEqual(plan_name(self.shop), "free")
+        self.api.assert_not_called()
+
+    def test_managed_missing_configuration_blocks_charge_flow(self):
+        self.managed_settings()
+        self.settings.SHOPIFY_PARTNER_ACCESS_TOKEN = ""
+        with self.assertRaises(HTTPException) as error:
+            billing.select_plan(self.db, self.user, self.shop, "pro")
+        self.assertEqual(error.exception.status_code, 503)
+        self.api.assert_not_called()
+
+    def test_partner_lookup_uses_current_store_and_verified_handle(self):
+        self.managed_settings()
+        self.api.side_effect = None
+        self.api.return_value = {"shop": {"id": "gid://shopify/Shop/7"}}
+        with patch.object(billing.requests, "post") as post:
+            post.return_value.json.return_value = {"data": {"activeSubscription": {
+                "shop": {"id": "gid://shopify/Shop/7"}, "items": [
+                    {"handle": "growth", "price": {"active": True}}],
+                "pendingUpdate": {"items": [{"handle": "pro"}]}}}}
+            billing.reconcile(self.db, self.shop)
+            self.assertEqual(plan_name(self.shop), "growth")
+            self.assertEqual(post.call_args.kwargs["json"]["variables"]["shopId"], "gid://shopify/Shop/7")
+            post.return_value.json.return_value = {"errors": [{"message": "throttled"}]}
+            with self.assertRaises(HTTPException):
+                billing.reconcile(self.db, self.shop)
+            self.assertEqual(plan_name(self.shop), "free")
+            self.assertEqual(self.shop.subscription_status, "unverified")
 
     def tearDown(self):
         self.db.close(); self.engine.dispose()

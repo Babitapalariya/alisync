@@ -8,6 +8,13 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 
 class Settings:
+    SHOPIFY_BILLING_MODE = os.getenv("SHOPIFY_BILLING_MODE", "app_pricing")
+    SHOPIFY_APP_HANDLE = os.getenv("SHOPIFY_APP_HANDLE", "alisync-1")
+    SHOPIFY_PARTNER_ID = os.getenv("SHOPIFY_PARTNER_ID", "")
+    SHOPIFY_PARTNER_ACCESS_TOKEN = os.getenv("SHOPIFY_PARTNER_ACCESS_TOKEN", "")
+    SHOPIFY_APP_GID = os.getenv("SHOPIFY_APP_GID", "")
+    SHOPIFY_GROWTH_PLAN_HANDLE = os.getenv("SHOPIFY_GROWTH_PLAN_HANDLE", "growth")
+    SHOPIFY_PRO_PLAN_HANDLE = os.getenv("SHOPIFY_PRO_PLAN_HANDLE", "pro")
     BILLING_ENABLED = os.getenv("BILLING_ENABLED", "true").lower() == "true"
     SHOPIFY_BILLING_TEST = os.getenv("SHOPIFY_BILLING_TEST", "false").lower() == "true"
     MYSQL_URL = os.getenv("MYSQL_URL", "mysql+pymysql://root@localhost/alisync_app")

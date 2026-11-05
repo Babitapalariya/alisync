@@ -37,12 +37,61 @@ def graphql(db, shop, query, variables=None):
     return body["data"]
 
 
+def managed_subscription(db, shop):
+    settings = get_settings()
+    if not (settings.SHOPIFY_PARTNER_ID and settings.SHOPIFY_PARTNER_ACCESS_TOKEN and settings.SHOPIFY_APP_GID):
+        raise HTTPException(503, "Shopify App Pricing verification is not configured. Configure the Partner API credentials and app GID on the server.")
+    shop_gid = graphql(db, shop, "{ shop { id } }")["shop"]["id"]
+    try:
+        response = requests.post(
+            f"https://partners.shopify.com/{quote(settings.SHOPIFY_PARTNER_ID, safe='')}/api/2026-07/graphql.json",
+            headers={"X-Shopify-Access-Token": settings.SHOPIFY_PARTNER_ACCESS_TOKEN},
+            json={"query": """query($appId: ID!, $shopId: ID!) {
+                activeSubscription(appId: $appId, shopId: $shopId) {
+                    shop { id } legacySubscriptionId
+                    items { handle price { active } }
+                }
+            }""", "variables": {"appId": settings.SHOPIFY_APP_GID, "shopId": shop_gid}}, timeout=30)
+        response.raise_for_status()
+        body = response.json()
+    except (requests.RequestException, ValueError) as exc:
+        raise HTTPException(502, "Could not verify Shopify App Pricing. Please retry.") from exc
+    if body.get("errors") or "activeSubscription" not in (body.get("data") or {}):
+        raise HTTPException(502, "Shopify App Pricing verification failed. Check the Partner API configuration.")
+    subscription = body["data"]["activeSubscription"]
+    if subscription is not None and subscription.get("shop", {}).get("id") != shop_gid:
+        raise HTTPException(502, "Shopify returned a subscription for a different store")
+    return subscription
+
+
+def reconcile_managed(db, shop, allow_partial):
+    try:
+        subscription = managed_subscription(db, shop)
+    except HTTPException as exc:
+        shop.subscription_status = "unverified"
+        db.commit()
+        if not allow_partial:
+            raise
+        return [{"shop_id": shop.id, "shop_domain": shop.shop_domain, "message": str(exc.detail)}]
+    settings = get_settings()
+    handles = {settings.SHOPIFY_GROWTH_PLAN_HANDLE: "growth", settings.SHOPIFY_PRO_PLAN_HANDLE: "pro"}
+    plans = [handles[item["handle"]] for item in (subscription or {}).get("items", [])
+             if item.get("handle") in handles and item.get("price", {}).get("active") is True]
+    shop.plan_name = max(plans, key=lambda name: PLANS[name]["price"], default="free")
+    shop.subscription_status = "active" if plans else "none" if subscription is None else "unrecognized"
+    shop.subscription_id = (subscription or {}).get("legacySubscriptionId")
+    db.commit()
+    return []
+
+
 def reconcile(db, shop, *, allow_partial=False):
     """Shopify billing belongs to the selected installation, never the account."""
     if shop.shopify_client_id and shop.shopify_client_id != get_settings().SHOPIFY_CLIENT_ID:
         raise HTTPException(409, "Reconnect this store using the AliSync Partner app")
     if not shop.is_active or not shop.access_token:
         raise HTTPException(409, "Reconnect this Shopify store to verify billing")
+    if get_settings().SHOPIFY_BILLING_MODE == "app_pricing":
+        return reconcile_managed(db, shop, allow_partial)
     try:
         data = graphql(db, shop, """{ currentAppInstallation { activeSubscriptions {
             id name status test lineItems { plan { pricingDetails {
@@ -89,6 +138,20 @@ def select_plan(db, user, shop, plan):
         raise HTTPException(400, "Unknown subscription plan")
     if shop.shopify_client_id and shop.shopify_client_id != get_settings().SHOPIFY_CLIENT_ID:
         raise HTTPException(409, "Reconnect this store using the AliSync Partner app before changing plans")
+    settings = get_settings()
+    if settings.SHOPIFY_BILLING_MODE == "app_pricing":
+        if plan != "free" and not settings.BILLING_ENABLED:
+            raise HTTPException(503, "Paid plans are temporarily unavailable")
+        # Verify integration before sending a merchant to approve a charge.
+        reconcile(db, shop)
+        if not settings.SHOPIFY_APP_HANDLE:
+            raise HTTPException(503, "Shopify App Pricing app handle is not configured")
+        store = shop.shop_domain.removesuffix(".myshopify.com")
+        url = f"https://admin.shopify.com/store/{quote(store, safe='')}/charges/{quote(settings.SHOPIFY_APP_HANDLE, safe='')}/pricing_plans"
+        return {"plan": shop.plan_name, "confirmation_url": url, "payment_required": plan != "free",
+                "message": "Choose and confirm your plan on Shopify"}
+    if settings.SHOPIFY_BILLING_MODE != "manual":
+        raise HTTPException(503, "Invalid Shopify billing mode")
     reconcile(db, shop)
     if plan == "free":
         if shop.subscription_id:
