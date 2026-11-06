@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, JSON, Numeric, String, Text, UniqueConstraint, func
 
 from .database import Base
 
@@ -262,3 +262,122 @@ class PlanProduct(Base):
     aliexpress_id = Column(String(64), nullable=False)
     full_access = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class StoreOrder(Base):
+    __tablename__ = "app_store_orders"
+    __table_args__ = (UniqueConstraint("shop_id", "shopify_order_id", name="uq_store_order"),)
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("app_users.id", ondelete="CASCADE"), nullable=False, index=True)
+    shop_id = Column(Integer, ForeignKey("app_shops.id", ondelete="CASCADE"), nullable=False, index=True)
+    shopify_order_id = Column(String(64), nullable=False)
+    name = Column(String(100), nullable=False)
+    customer_id = Column(String(64), index=True)
+    customer_name = Column(String(255))
+    address_encrypted = Column(Text)
+    address_override_encrypted = Column(Text)
+    privacy_redacted = Column(Boolean, nullable=False, default=False)
+    currency = Column(String(8), nullable=False)
+    total = Column(Numeric(18, 4), nullable=False, default=0)
+    payment_status = Column(String(40))
+    fulfillment_status = Column(String(40))
+    cancelled = Column(Boolean, nullable=False, default=False)
+    placed_at = Column(DateTime(timezone=True), nullable=False)
+    source_updated_at = Column(DateTime(timezone=True), nullable=False)
+    synced_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class StoreOrderLine(Base):
+    __tablename__ = "app_store_order_lines"
+    __table_args__ = (UniqueConstraint("order_id", "shopify_line_id", name="uq_order_line"),
+        UniqueConstraint("user_id", "supplier_order_id", name="uq_supplier_purchase"),)
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("app_users.id", ondelete="CASCADE"), nullable=False, index=True)
+    shop_id = Column(Integer, ForeignKey("app_shops.id", ondelete="CASCADE"), nullable=False, index=True)
+    order_id = Column(Integer, ForeignKey("app_store_orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    shopify_line_id = Column(String(64), nullable=False)
+    product_id = Column(String(64))
+    variant_id = Column(String(64))
+    title = Column(String(500))
+    variant_title = Column(String(500))
+    quantity = Column(Integer, nullable=False)
+    revenue = Column(Numeric(18, 4), nullable=False, default=0)
+    supplier_product_id = Column(String(64))
+    supplier_sku_id = Column(String(128))
+    status = Column(String(40), nullable=False, default="new", index=True)
+    quote = Column(JSON)
+    quote_token = Column(String(64))
+    quote_at = Column(DateTime(timezone=True))
+    supplier_order_id = Column(String(64), index=True)
+    supplier_created_at = Column(DateTime(timezone=True))
+    supplier_raw_status = Column(String(100))
+    supplier_total = Column(Numeric(18, 4))
+    supplier_currency = Column(String(8))
+    payment_confirmed = Column(Boolean, nullable=False, default=False)
+    payment_url = Column(Text)
+    tracking = Column(JSON)
+    fulfillment_id = Column(String(128))
+    fulfillment_state = Column(String(40))
+    error = Column(Text)
+    refreshed_at = Column(DateTime(timezone=True))
+
+
+class OrderActivity(Base):
+    __tablename__ = "app_order_activity"
+    id = Column(Integer, primary_key=True)
+    shop_id = Column(Integer, ForeignKey("app_shops.id", ondelete="CASCADE"), nullable=False, index=True)
+    order_id = Column(Integer, ForeignKey("app_store_orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    line_id = Column(Integer, ForeignKey("app_store_order_lines.id", ondelete="CASCADE"))
+    message = Column(String(1000), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class OrderSyncState(Base):
+    __tablename__ = "app_order_sync_state"
+    shop_id = Column(Integer, ForeignKey("app_shops.id", ondelete="CASCADE"), primary_key=True)
+    checked_at = Column(DateTime(timezone=True))
+    cursor = Column(String(1000))
+    window_end = Column(DateTime(timezone=True))
+    retry_after = Column(DateTime(timezone=True))
+    error = Column(String(500))
+
+
+class OrderPrivacyRequest(Base):
+    __tablename__ = "app_order_privacy_requests"
+    id = Column(Integer, primary_key=True)
+    shop_id = Column(Integer, ForeignKey("app_shops.id", ondelete="CASCADE"), nullable=False, index=True)
+    request_id = Column(String(100), unique=True)
+    export_encrypted = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class OrderFulfillment(Base):
+    __tablename__ = "app_order_fulfillments"
+    __table_args__ = (UniqueConstraint("line_id", "fulfillment_order_id", name="uq_order_fulfillment_attempt"),)
+    id = Column(Integer, primary_key=True)
+    shop_id = Column(Integer, ForeignKey("app_shops.id", ondelete="CASCADE"), nullable=False, index=True)
+    order_id = Column(Integer, ForeignKey("app_store_orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    line_id = Column(Integer, ForeignKey("app_store_order_lines.id", ondelete="CASCADE"), nullable=False)
+    fulfillment_order_id = Column(String(128), nullable=False)
+    fulfillment_line_id = Column(String(128), nullable=False)
+    quantity = Column(Integer, nullable=False)
+    state = Column(String(32), nullable=False, default="planned")
+    fulfillment_id = Column(String(128))
+
+
+class OrderWebhookTask(Base):
+    __tablename__ = "app_order_webhook_tasks"
+    id = Column(Integer, primary_key=True)
+    shop_id = Column(Integer, ForeignKey("app_shops.id", ondelete="CASCADE"), nullable=False, index=True)
+    event_key = Column(String(64), unique=True, nullable=False)
+    order_gid = Column(String(64), nullable=False)
+    attempts = Column(Integer, nullable=False, default=0)
+    retry_at = Column(DateTime(timezone=True))
+
+
+class OrderRedactedCustomer(Base):
+    __tablename__ = "app_order_redacted_customers"
+    __table_args__ = (UniqueConstraint("shop_id", "customer_id", name="uq_order_redacted_customer"),)
+    id = Column(Integer, primary_key=True)
+    shop_id = Column(Integer, ForeignKey("app_shops.id", ondelete="CASCADE"), nullable=False, index=True)
+    customer_id = Column(String(64), nullable=False)

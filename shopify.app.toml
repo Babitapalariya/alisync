@@ -7,7 +7,7 @@ name = "AliSync"
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "write_inventory,read_inventory,read_orders,write_orders,read_products,write_products,customer_read_orders,customer_write_orders"
+scopes = "write_inventory,read_inventory,read_orders,read_customers,write_orders,read_products,write_products,customer_read_orders,customer_write_orders,read_merchant_managed_fulfillment_orders,write_merchant_managed_fulfillment_orders"
 optional_scopes = [ ]
 use_legacy_install_flow = false
 
@@ -28,3 +28,7 @@ uri = "https://alisync.retradviews.com/api/webhooks/shopify/uninstalled"
 [[webhooks.subscriptions]]
 topics = ["app_subscriptions/update"]
 uri = "https://alisync.retradviews.com/api/webhooks/shopify/subscriptions"
+
+[[webhooks.subscriptions]]
+topics = ["orders/create", "orders/updated", "orders/cancelled", "orders/paid"]
+uri = "https://alisync.retradviews.com/api/webhooks/shopify/orders"

@@ -417,6 +417,7 @@
 <style>
 #pg-plans{background:linear-gradient(135deg,#f8fbff,#f7f5ff);padding:32px 20px}.pricing-wrap{width:100%;max-width:1500px}.plan-grid{gap:26px;padding-top:16px}.plan-card{border:1px solid #e8eefb;border-radius:20px;padding:30px;min-height:610px;box-shadow:0 12px 30px rgba(62,94,160,.04)}.plan-card.featured{border:2px solid #8754ff;background:linear-gradient(145deg,#faf6ff,#fff 65%);box-shadow:0 10px 26px #723aff18}.plan-top{display:flex;align-items:center;justify-content:space-between;gap:10px}.plan-name{font-size:30px;letter-spacing:-1px;color:#101221}.plan-symbol{display:grid;place-items:center;width:58px;height:58px;border-radius:50%;background:#edf4ff;color:#1261ff;font-size:30px}.plan-growth .plan-symbol{background:#f3eaff;color:#7128f5}.plan-pro .plan-symbol{background:#e2fbef;color:#00bf76}.plan-desc{font-size:15px;line-height:1.5;color:#717b98;min-height:90px;margin:12px 0 18px}.plan-price{font-size:54px;letter-spacing:-2px;color:#0d1020}.plan-price small{font-size:16px;letter-spacing:0;color:#646f8e}.plan-card ul{gap:16px;margin:26px 0;align-content:start}.plan-card li{font-size:15px;line-height:1.5;align-items:flex-start;gap:13px;color:#23273c}.plan-feature-icon{width:38px;height:38px;border-radius:50%;background:#e5fbf1;display:grid;place-items:center;flex:none}.plan-card li .plan-feature-icon i{font-size:22px;color:#00bd78}.plan-card li small{display:block;color:#75819e;font-size:14px;margin-top:3px}.plan-highlight{background:#fffaf0;border-radius:17px;padding:15px;margin:0 -8px}.plan-highlight .plan-feature-icon{background:transparent}.plan-card .plan-highlight i{color:#f4a000!important}.plan-muted{color:#66718b!important}.plan-footer{margin-top:auto;padding-top:24px;border-top:1px solid #e5eafa}.plan-card .plan-choice{min-height:52px;border-radius:12px;font-size:17px;font-weight:700;color:#fff;border:1px solid #6928f5;background:#6928f5}.plan-card .plan-choice:disabled{opacity:1;color:#00b86a;border-color:#00c978;background:#effdf5;cursor:default}.plan-tag{top:-18px;right:50%;transform:translateX(50%);white-space:nowrap;background:#6928f5;padding:8px 24px;font-size:15px}.plan-usage{border:1px solid #ffe59a!important;background:#fff9e8!important;color:#994017!important;border-radius:15px;padding:17px 22px;line-height:1.5}.plan-usage>i{color:#ffab00;font-size:24px;margin-right:10px}@media(max-width:1000px){.plan-grid{gap:16px}.plan-card{padding:22px}.plan-name{font-size:25px}}@media(max-width:760px){.plan-grid{grid-template-columns:1fr;gap:32px}.plan-card{min-height:auto}.plan-desc{min-height:0}.plan-price{font-size:46px}#pg-plans{padding:24px 12px}}
 </style>
+<link rel="stylesheet" href="/orders.css">
 </head>
 <body>
 
@@ -487,6 +488,7 @@
       <button class="sb-item" data-page="import" onclick="goPage('import',this)"><i class="ti ti-cloud-download"></i> Fetch & Import</button>
       <button class="sb-item" data-page="products" onclick="goPage('products',this)"><i class="ti ti-packages"></i> Imported Products<span class="sb-badge" id="sb-count">0</span></button>
       <button class="sb-item" data-page="pending" onclick="goPage('pending',this)"><i class="ti ti-hourglass"></i> Awaiting Stock<span class="sb-badge" id="pending-count">0</span></button>
+      <button class="sb-item" data-page="orders" onclick="goPage('orders',this)"><i class="ti ti-shopping-bag"></i> Orders</button>
       <div class="sb-section">System</div>
       <button class="sb-item" data-page="mappings" onclick="goPage('mappings',this)"><i class="ti ti-link"></i> Sync Old Products</button>
       <button class="sb-item" data-page="dead-listings" onclick="goPage('dead-listings',this)"><i class="ti ti-heartbeat"></i> Dead Listings<span class="sb-badge" id="dead-count" style="background:var(--red)">0</span></button>
@@ -539,6 +541,19 @@
         </div>
       </div>
 
+      <div class="page" id="pg-orders">
+        <div class="orders-workspace">
+          <div id="orders-live-message" class="orders-notice" role="status" aria-live="polite"></div>
+          <div id="orders-list-view">
+            <div class="orders-hero"><div><div class="orders-eyebrow">From sale to doorstep</div><h2>Your orders, in one place.</h2><p class="orders-muted">Review suppliers, arrange purchases and keep every shipment moving.</p><span id="orders-store-label" class="orders-muted"></span></div><div class="orders-actions"><a class="btn" href="https://www.aliexpress.com/p/order/index.html" target="_blank" rel="noopener noreferrer"><i class="ti ti-external-link"></i> AliExpress orders</a><button class="btn btn-primary" data-order-action="sync" onclick="syncShopifyOrders()"><i class="ti ti-refresh"></i> Sync Shopify orders</button></div></div>
+            <div class="orders-stats"><div class="orders-stat"><i class="ti ti-shopping-bag"></i><div><strong id="orders-stat-to_buy">?</strong><span>Items to purchase</span></div></div><div class="orders-stat"><i class="ti ti-credit-card"></i><div><strong id="orders-stat-awaiting_payment">?</strong><span>Awaiting supplier payment</span></div></div><div class="orders-stat"><i class="ti ti-truck-delivery"></i><div><strong id="orders-stat-in_transit">?</strong><span>Items in transit</span></div></div><div class="orders-stat"><i class="ti ti-alert-circle"></i><div><strong id="orders-stat-attention">?</strong><span>Need attention</span></div></div></div>
+            <div class="orders-panel"><form class="orders-toolbar" onsubmit="event.preventDefault();orderSelectionChanged()"><label class="orders-search">Search orders<input id="orders-q" type="search" placeholder="Order number, customer or product"></label><label>Supplier status<select id="orders-status" onchange="orderSelectionChanged()"><option value="">All statuses</option><option value="new">New</option><option value="needs_mapping">Needs Mapping</option><option value="ready_to_buy">Ready To Buy</option><option value="awaiting_payment">Awaiting Payment</option><option value="ordered">Ordered</option><option value="processing">Processing</option><option value="shipped">Shipped</option><option value="delivered">Delivered</option><option value="cancelled">Cancelled</option><option value="failed">Failed</option><option value="uncertain">Uncertain</option></select></label><label>Customer payment<select id="orders-payment" onchange="orderSelectionChanged()"><option value="">All payments</option><option value="PAID">Paid</option><option value="PARTIALLY_PAID">Partially paid</option><option value="PENDING">Pending</option><option value="AUTHORIZED">Authorized</option><option value="REFUNDED">Refunded</option><option value="PARTIALLY_REFUNDED">Partially refunded</option><option value="VOIDED">Voided</option></select></label><label>Shopify fulfillment<select id="orders-fulfillment" onchange="orderSelectionChanged()"><option value="">All fulfillment</option><option value="UNFULFILLED">Unfulfilled</option><option value="PARTIALLY_FULFILLED">Partially fulfilled</option><option value="FULFILLED">Fulfilled</option></select></label><label>From (UTC)<input type="date" id="orders-date_from" onchange="orderSelectionChanged()"></label><label>To (UTC)<input type="date" id="orders-date_to" onchange="orderSelectionChanged()"></label><button class="btn" type="submit">Search</button></form>
+              <div class="orders-paging"><span id="orders-last-sync">Last sync: not yet</span><div class="orders-actions"><button class="btn btn-sm" data-order-action="bulk" onclick="refreshSelectedOrders()">Refresh selected</button><button class="btn btn-sm" onclick="downloadOrderReport()">Profit report</button></div></div>
+              <div class="orders-table-wrap"><table class="orders-table"><thead><tr><th><input type="checkbox" aria-label="Select visible orders" onchange="document.querySelectorAll('.order-select').forEach(el=>el.checked=this.checked)"></th><th>Order</th><th>Customer</th><th>Total / Payment</th><th>Supplier progress</th><th>Shopify fulfillment</th><th></th></tr></thead><tbody id="orders-table-body"></tbody></table></div><div class="orders-paging"><span id="orders-page-label"></span><div class="orders-actions"><button id="orders-prev" class="btn btn-sm" onclick="changeOrdersPage(-1)">Previous</button><button id="orders-next" class="btn btn-sm" onclick="changeOrdersPage(1)">Next</button></div></div><div class="orders-report-note">Supplier payment and Shopify customer payment are separate. A shipped item is not marked delivered without confirmation.</div>
+            </div><div class="orders-privacy"><button class="btn btn-sm" data-order-action="privacy" onclick="showOrderPrivacy()">Customer data requests</button></div>
+          </div><div id="orders-detail-view" hidden></div>
+        </div>
+      </div>
       <!-- DASHBOARD -->
       <div class="page active" id="pg-dashboard">
         <section class="dashboard-modern">
@@ -1401,7 +1416,7 @@ function showToast(msg, type="", persistent=false){
   function logout(){tenantLogout();}
 
   // ── NAVIGATION ──
-  const PAGE_META={dashboard:"Dashboard","how-to-use":"How to Use",plans:"Plans & Product Access",notifications:"Notifications",import:"Fetch & Import",products:"Imported Products",pending:"Awaiting Stock",mappings:"Sync Old Products","dead-listings":"Dead Listings",settings:"Settings"};
+  const PAGE_META={orders:"Orders",dashboard:"Dashboard","how-to-use":"How to Use",plans:"Plans & Product Access",notifications:"Notifications",import:"Fetch & Import",products:"Imported Products",pending:"Awaiting Stock",mappings:"Sync Old Products","dead-listings":"Dead Listings",settings:"Settings"};
   function openSetupTutorials(){
     connectionOnboardingActive=false;
     document.getElementById("connection-onboarding").style.display="none";
@@ -1424,6 +1439,7 @@ function showToast(msg, type="", persistent=false){
     document.getElementById("tb-title").textContent=PAGE_META[name]||name;
     document.getElementById("tb-bc-page").textContent=PAGE_META[name]||name;
     if(name==="dashboard"){loadStats();loadRecent();}
+    if(name==="orders") loadOrders();
     if(name==="plans") loadSubscription();
     if(name==="products") loadProducts();
     if(name==="mappings") loadMappings(1);
@@ -3709,5 +3725,7 @@ function refreshCurrentSearch() {
   initializeAppSession();
 
 </script>
+<dialog id="order-action-dialog" class="order-dialog" aria-label="Order action"></dialog>
+<script src="/orders.js"></script>
 </body>
 </html>

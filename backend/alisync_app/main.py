@@ -14,6 +14,7 @@ from .schema_migrations import add_missing_columns
 from .notification_routes import router as notification_router
 from .shopify_webhooks import router as shopify_webhook_router
 from .shopify_session import router as shopify_session_router
+from .orders import router as orders_router
 
 Base.metadata.create_all(bind=engine, checkfirst=True)
 add_missing_columns()
@@ -28,6 +29,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def order_privacy_headers(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/app/orders"):
+        response.headers["Cache-Control"] = "private, no-store"
+    return response
 
 
 @app.get("/", include_in_schema=False)
@@ -71,3 +80,5 @@ app.include_router(router)
 app.include_router(notification_router)
 app.include_router(shopify_webhook_router)
 app.include_router(shopify_session_router)
+
+app.include_router(orders_router)

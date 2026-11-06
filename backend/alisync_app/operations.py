@@ -732,6 +732,11 @@ def start_scheduler():
         scheduler.add_job(process_pending_imports, trigger=IntervalTrigger(minutes=30),
                            id="pending_import_job", replace_existing=True, misfire_grace_time=1800,
                            next_run_time=datetime.now(timezone.utc), coalesce=True, max_instances=1)
+        from .orders import sync_orders_background, process_order_webhooks
+        scheduler.add_job(sync_orders_background, trigger=IntervalTrigger(minutes=10),
+                          id="orders_sync", replace_existing=True, coalesce=True, max_instances=1)
+        scheduler.add_job(process_order_webhooks, trigger=IntervalTrigger(minutes=1),
+                          id="orders_webhooks", replace_existing=True, coalesce=True, max_instances=1)
         scheduler.start()
         jobs = scheduler.get_jobs()
         print(f"[Scheduler] Started with {len(jobs)} job(s):")

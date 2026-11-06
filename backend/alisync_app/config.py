@@ -8,6 +8,9 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 
 class Settings:
+    ALIEXPRESS_ORDER_CREATE_ENABLED = os.getenv("ALIEXPRESS_ORDER_CREATE_ENABLED", "false").lower() == "true"
+    ORDER_SYNC_ENABLED = os.getenv("ORDER_SYNC_ENABLED", "true").lower() == "true"
+    ORDER_AUTO_FULFILL = os.getenv("ORDER_AUTO_FULFILL", "false").lower() == "true"
     SHOPIFY_BILLING_MODE = os.getenv("SHOPIFY_BILLING_MODE", "app_pricing")
     SHOPIFY_APP_HANDLE = os.getenv("SHOPIFY_APP_HANDLE", "alisync-1")
     SHOPIFY_PARTNER_ID = os.getenv("SHOPIFY_PARTNER_ID", "")
