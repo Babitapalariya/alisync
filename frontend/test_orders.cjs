@@ -22,3 +22,14 @@ console.log('Order rendering, recovery, escaping and payment-link checks passed.
 html=render({product_id:null,supplier_product_url:"https://www.aliexpress.com/item/123456.html",status:"new"});
 assert.ok(html.includes("Open product on AliExpress"));
 assert.ok(html.includes('href="https://www.aliexpress.com/item/123456.html"'));
+
+// Production deployment must work even when the host serves only index.html.
+const deployedHtml=fs.readFileSync(__dirname+'/index.html','utf8');
+for(const [ext,tag] of [['css','style'],['js','script']]){
+  const bundle=deployedHtml.match(new RegExp(`<${tag} id="orders-${ext}-bundle">\\r?\\n([\\s\\S]*?)\\r?\\n</${tag}>`));
+  assert.ok(bundle, `Missing embedded Orders ${ext}`);
+  assert.equal(bundle[1].replace(/\r\n/g,'\n'),fs.readFileSync(__dirname+`/orders.${ext}`,'utf8').trim().replace(/\r\n/g,'\n'), 'Run node frontend/build_orders.cjs after changing order assets');
+}
+assert.ok(!deployedHtml.includes('src="/orders.js"'));
+assert.ok(!deployedHtml.includes('href="/orders.css"'));
+console.log('Single-file deployment checks passed.');

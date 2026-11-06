@@ -8,7 +8,7 @@ Supplier payment, Shopify customer payment, fulfillment and delivery are separat
 
 ## Deployment
 
-1. Back up the database, then deploy the backend and all frontend files, including `orders.js` and `orders.css`. Install `backend/requirements.txt`. New order tables are created by the existing startup metadata creation; existing product tables are unchanged.
+1. Back up the database, then deploy the backend and the updated `frontend/index.html`. Orders CSS/JS are bundled into the HTML so production SPA fallback routes cannot return HTML in place of those assets. After editing `orders.js` or `orders.css`, run `node frontend/build_orders.cjs` and deploy the regenerated HTML. Keep the source CSS/JS and build script in the repository. Install `backend/requirements.txt`. New order tables are created by the existing startup metadata creation; existing product tables are unchanged.
 2. Keep `APP_SECRET` stable: stored shipping addresses and temporary privacy exports use the existing encryption key. Rotating that key without a migration makes existing encrypted records unreadable.
 3. Deploy the updated `shopify.app.toml` through the existing Shopify app release process. It registers order created/updated/cancelled/paid webhooks and requests merchant-managed fulfillment order read/write scopes. Approve updated permissions in the store. Order/customer fields also require Shopify protected customer data access appropriate to this app. Initial synchronization covers the usual last 60 days; older history requires Shopify approval for `read_all_orders` and a separate historical import.
 4. Set these in the server runtime environment (normally `backend/.env`), then restart the backend:
