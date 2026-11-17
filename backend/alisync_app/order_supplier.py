@@ -1,5 +1,6 @@
 ﻿"""Authorized AliExpress DS order adapter. No browser checkout automation."""
 import json
+import hashlib
 import re
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlparse
@@ -26,9 +27,24 @@ def items(value, key):
     return value if isinstance(value, list) else []
 
 
-def call(db, method, params):
+def connection_identity(token, app_key):
+    if not token.account_id or token.oauth_app_key != app_key:
+        raise HTTPException(409, "Reconnect AliExpress to verify the purchasing account identity before checkout.")
+    return {"account_id": token.account_id, "label": token.account_label or token.account_id,
+            "binding": hashlib.sha256((app_key + "\0" + token.access_token).encode()).hexdigest()}
+
+
+def connection(db):
+    token = get_latest_token(db)
+    app_key, _, _ = get_aliexpress_credentials(db)
+    return connection_identity(token, app_key)
+
+
+def call(db, method, params, expected_connection=None):
     token = get_latest_token(db)
     app_key, secret, _ = get_aliexpress_credentials(db)
+    if expected_connection is not None and connection_identity(token, app_key) != expected_connection:
+        raise HTTPException(409, "AliExpress account or authorization changed. Review a fresh quote before continuing.")
     try:
         body = _call(method, params, token.access_token, app_key, secret)
     except Exception as exc:
@@ -55,6 +71,7 @@ def safe_payment_url(value):
 
 
 def quote(db, product_id, sku_id, quantity, address, ship_from):
+    account = connection(db)
     raw = get_product(product_id, db, ship_to_country=address["country"])
     sku = next((s for s in raw.get("skus", []) if str(s.get("sku_id")) == str(sku_id)), None)
     if not sku or not sku.get("sku_attr"):
@@ -65,29 +82,51 @@ def quote(db, product_id, sku_id, quantity, address, ship_from):
     currency = sku.get("currency") or raw.get("currency")
     if not currency:
         raise HTTPException(409, "Supplier price currency is unavailable")
-    request = {"country_code": address["country"], "product_id": product_id,
-               "product_num": quantity, "send_goods_country_code": ship_from,
-               "price": str(unit), "price_currency": currency}
-    freight = call(db, "aliexpress.logistics.buyer.freight.calculate", {
-        "param_aeop_freight_calculate_for_buyer_d_t_o": json.dumps(request)})
+    request = {"shipToCountry": address["country"], "productId": str(product_id),
+               "quantity": quantity, "selectedSkuId": str(sku_id),
+               "language": "en_US", "locale": "en_US", "currency": currency}
+    freight = call(db, "aliexpress.ds.freight.query", {"queryDeliveryReq": json.dumps(request)})
     if freight.get("success") is not True:
-        raise HTTPException(409, "No verified shipping quote for this destination")
+        raise HTTPException(409,
+            f"AliExpress shipping API returned no verified quote for {ship_from} to {address['country']}. "
+            "This does not confirm that delivery is unavailable on the AliExpress website. "
+            "Automatic checkout needs a verified shipping service; use Open product on AliExpress to review manual checkout.")
     methods = []
-    for entry in items(freight.get("aeop_freight_calculate_result_for_buyer_d_t_o_list", []), "aeop_freight_calculate_result_for_buyer_dto"):
-        cost = entry.get("freight") or {}
-        if str(entry.get("error_code", 0)) != "0" or cost.get("currency_code") != currency or not entry.get("service_name"):
+    origins = set()
+    for entry in items(freight.get("delivery_options", []), "delivery_option_d_t_o"):
+        origin = str(entry.get("ship_from_country") or "").upper()
+        if origin:
+            origins.add(origin)
+        # DS omits amount/currency for explicitly free delivery. Zero has no FX ambiguity.
+        free_shipping = entry.get("free_shipping") is True
+        if origin != ship_from or not entry.get("code"):
             continue
-        methods.append({"code": entry["service_name"], "cost": str(money(cost.get("amount"))),
-                        "delivery": str(entry.get("estimated_delivery_time") or "Not provided")})
+        if not free_shipping and entry.get("shipping_fee_currency") != currency:
+            continue
+        if entry.get("available_stock") is not None and int(entry["available_stock"]) < quantity:
+            continue
+        # Despite its name, this API field is a decimal currency amount (2.99 = USD 2.99).
+        amount = "0" if entry.get("free_shipping") is True else entry.get("shipping_fee_cent")
+        methods.append({"code": entry["code"], "cost": str(money(amount)),
+                        "delivery": str(entry.get("delivery_date_desc") or entry.get("max_delivery_days") or "Not provided"),
+                        "ship_from": origin})
     if not methods:
-        raise HTTPException(409, "No supported shipping method returned for this destination")
-    return {"product_id": str(product_id), "sku_id": str(sku_id), "sku_attr": sku["sku_attr"],
+        available = ", ".join(sorted(origins))
+        if origins and ship_from not in origins:
+            raise HTTPException(409, f"Selected Ships from: {ship_from}. This variant ships from {available}. Select {available} and retry.")
+        raise HTTPException(409, f"AliExpress returned no usable shipping service from {ship_from} for quantity {quantity} in {currency}. The warehouse selection matches; refresh the quote or check the exact variant's stock and shipping currency.")
+    if connection(db) != account:
+        raise HTTPException(409, "AliExpress connection changed while quoting. Refresh and review the account again.")
+    return {"supplier_connection": account, "product_id": str(product_id), "sku_id": str(sku_id), "sku_attr": sku["sku_attr"],
             "title": raw.get("title"), "variant": sku.get("label"), "image": sku.get("image") or raw.get("main_image"),
             "unit_price": str(unit), "stock": int(sku["stock"]), "quantity": quantity, "currency": currency, "methods": methods,
             "ship_from": ship_from, "product_url": f"https://www.aliexpress.com/item/{product_id}.html"}
 
 
 def create(db, prepared, address, reference):
+    expected = prepared.get("supplier_connection")
+    if not expected or connection(db) != expected:
+        raise HTTPException(409, "AliExpress purchasing account is unverified or changed. Reconnect and review a fresh quote.")
     # The documented endpoint returns order IDs, not a guaranteed cashier URL.
     payload = {"logistics_address": {
         "contact_person": address["name"], "full_name": address["name"], "address": address["address1"],
@@ -98,15 +137,15 @@ def create(db, prepared, address, reference):
             "product_count": prepared["quantity"], "logistics_service_name": prepared["shipping"]["code"],
             "order_memo": reference}]}
     result = call(db, "aliexpress.trade.buy.placeorder", {
-        "param_place_order_request4_open_api_d_t_o": json.dumps(payload)})
+        "param_place_order_request4_open_api_d_t_o": json.dumps(payload)}, expected_connection=expected)
     ids = items(result.get("order_list"), "number")
     if result.get("is_success") is not True or len(ids) != 1 or not re.fullmatch(r"\d+", str(ids[0])):
         raise HTTPException(502, "Supplier creation could not be confirmed. Check AliExpress orders before any retry.")
     return {"order_id": str(ids[0]), "payment_url": safe_payment_url(result.get("payment_url") or result.get("pay_url"))}
 
 
-def status(db, order_id):
-    result = call(db, "aliexpress.ds.trade.order.get", {"order_id": order_id})
+def status(db, order_id, expected_connection=None):
+    result = call(db, "aliexpress.ds.trade.order.get", {"order_id": order_id}, expected_connection=expected_connection)
     raw = str(result.get("order_status") or "").strip().upper()
     logistics = str(result.get("logistics_status") or "").strip().upper()
     states = {"PLACE_ORDER_SUCCESS": "awaiting_payment", "WAIT_BUYER_PAY": "awaiting_payment",

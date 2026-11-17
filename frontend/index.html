@@ -1166,6 +1166,9 @@
     return !!subscriptionState.products.find(p=>p.source===source&&String(p.id)===String(id)&&String(p.shop_id)===String(activeShopId))?.full_access;
   }
   function productAccessTag(source,id){
+    if(!subscriptionState||String(subscriptionState.shop_id)!==String(activeShopId)){
+      return `<button class="badge b-gray" style="cursor:pointer;margin:3px" title="Access information could not be loaded. Open plans to retry." onclick="showPricing()">Access unavailable</button>`;
+    }
     const full=productHasFullAccess(source,id);
     return `<button class="badge ${full?'b-green':'b-gray'}" style="cursor:pointer;margin:3px" title="Manage product feature access" onclick="showPricing()">${full?'Full access':'Basic access'}</button>`;
   }
@@ -1245,6 +1248,7 @@
       if(shop.connected)onboardingShopBtn.innerHTML='<i class="ti ti-refresh"></i> Reconnect Shopify';
       if(ali.connected)onboardingAliBtn.innerHTML='<i class="ti ti-refresh"></i> Reconnect AliExpress';
       summary.textContent=status.ready?`Authentication complete${shop.shop_domain?` for ${shop.shop_domain}`:""}.`:`Authentication pending — ${!shop.connected?"connect Shopify":""}${!shop.connected&&!ali.connected?" and ":""}${!ali.connected?"connect AliExpress":""}.`;
+      if(ali.connected)summary.textContent+=' AliExpress purchasing account: '+(ali.identity_verified?(ali.account_label||ali.account_id)+' (ID '+ali.account_id+')':'unverified - reconnect before placing orders.');
       const banner=document.getElementById("connection-banner");banner.style.background=status.ready?"var(--green-bg)":"var(--orange-bg)";banner.style.borderColor=status.ready?"var(--green-border)":"var(--orange-border)";
       document.getElementById("connection-onboarding").style.display=connectionOnboardingActive?"flex":"none";
       if(status.ready&&tenantSelectedPlan){if(connectionOnboardingActive){continueToDashboard()}else{loadStats();loadRecent()}}
@@ -1687,6 +1691,9 @@ function showToast(msg, type="", persistent=false){
     const tb = document.getElementById("prod-tbody");
     tb.innerHTML = `<tr><td colspan="9"><div class="empty"><i class="ti ti-loader-2 spin"></i><p>Loading…</p></div></td></tr>`;
     try {
+      const accessShop=activeShopId;
+      await loadSubscription();
+      if(activeShopId!==accessShop)return;
       const url = `${API}/dashboard/products?page=${prodPage}&page_size=5` + (q ? `&search=${encodeURIComponent(q)}` : '');
       const r = await fetch(url);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -2368,8 +2375,8 @@ async function syncInventoryFromModal() {
     const allSkus=[...oos.map(s=>({...s,_oos:true})),...ins.map(s=>({...s,_oos:false}))];
     const rows=allSkus.map((s,i)=>{
       const stockDisplay=s.stock===null||s.stock===undefined?`<span class="stock-unkn">—</span>`:s._oos?`<span class="stock-oos">0</span>`:`<span class="stock-in">${s.stock}</span>`;
-      const price=s.sale_price||s.price||'—';
-      return`<tr style="background:${i%2?"var(--bg)":"transparent"}"><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(s.label)}">${escapeHtml(s.label)}</td><td>${stockDisplay}</td><td style="font-family:var(--mono);color:var(--orange)">$${price}</td><td>${s._oos?'<span class="badge b-red" style="font-size:9px">OOS</span>':'<span class="badge b-green" style="font-size:9px">In Stock</span>'}</td></tr>`;
+      const price=s.final_price??s.sale_price??s.price??'—';
+      return`<tr style="background:${i%2?"var(--bg)":"transparent"}"><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(s.label)}">${escapeHtml(s.label)}</td><td>${stockDisplay}</td><td style="font-family:var(--mono);color:var(--orange)">${Number(s.price)>Number(price)?`<del style="color:var(--t3)">$${escapeHtml(s.price)}</del> `:""}$${escapeHtml(price)}</td><td>${s._oos?'<span class="badge b-red" style="font-size:9px">OOS</span>':'<span class="badge b-green" style="font-size:9px">In Stock</span>'}</td></tr>`;
     }).join('');
     return`<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px">${pillIns}${pillOos}</div><details class="sku-accordion"><summary><i class="ti ti-chevron-right chevron"></i>Show ${allSkus.length} variant${allSkus.length!==1?"s":""}</summary><div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;margin-top:4px;max-height:200px;overflow-y:auto"><table class="sku-table"><thead><tr><th>Variant</th><th>Stock</th><th>Price</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div></details>`;
   }
@@ -2829,6 +2836,8 @@ async function pushInventoryToShopify() {
     document.getElementById("prod-count-sub").textContent = `Searching for ID "${q}"…`;
     document.getElementById("prod-pag").style.display = "none";
     try {
+      await loadSubscription();
+      if(!isCurrent())return;
       const r = await fetch(`${API}/dashboard/products/lookup?q=${encodeURIComponent(q)}`);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const d = await r.json();
@@ -3735,6 +3744,37 @@ function refreshCurrentSearch() {
 /* Orders keep supplier, Shopify payment, and Shopify fulfillment states separate. */
 let ordersPage = 1, ordersResult = null, openedOrder = null, orderRequestVersion = 0;
 const orderBusy = new Set();
+const orderOrigins = new Map();
+function orderOriginKey(id){return `${activeShopId}:${id}`}
+function rememberOrderOrigin(id,value){
+ const key=orderOriginKey(id);orderOrigins.set(key,value);
+ try{sessionStorage.setItem('alisync-order-origin:'+key,value)}catch{}
+}
+function savedOrderOrigin(id){
+ const key=orderOriginKey(id);let value=orderOrigins.get(key);
+ try{value=value||sessionStorage.getItem('alisync-order-origin:'+key)}catch{}
+ return ['CN','US','GB','DE','FR','ES','PL','AU','CA'].includes(value)?value:null;
+}
+function orderLineError(line){
+ const failedOrigin=/^Selected Ships from: ([A-Z]{2})\./.exec(line.error||'')?.[1];
+ const selected=savedOrderOrigin(line.id)||line.quote?.ship_from||'CN';
+ if(failedOrigin&&failedOrigin!==selected&&!line.supplier_order_id){
+  return `Previous quote used ${failedOrigin}. Ships from is now ${selected}; click Verify supplier to get an updated quote.`;
+ }
+ return line.error||'';
+}
+function changeOrderOrigin(id,value){
+ rememberOrderOrigin(id,value);
+ const line=openedOrder?.lines.find(item=>item.id===id);
+ const item=document.getElementById('order-origin-'+id)?.closest('.order-item');
+ if(line&&item)item.outerHTML=renderOrderLine(line);
+}
+function orderQuoteRequest(id){
+ const origin=document.getElementById('order-origin-'+id).value;
+ rememberOrderOrigin(id,origin);
+ const previous=openedOrder.lines.find(line=>line.id===id)?.quote;
+ return {ship_from:origin,shipping_code:previous?.ship_from===origin?document.getElementById('order-shipping-'+id)?.value:undefined};
+}
 const orderStates = ['new','needs_mapping','ready_to_buy','awaiting_payment','ordered','processing','shipped','delivered','cancelled','failed','uncertain'];
 const orderEscape = value => escapeHtml(String(value ?? ''));
 const orderLabel = value => String(value || 'unknown').replaceAll('_',' ').replace(/\b\w/g,c=>c.toUpperCase());
@@ -3779,22 +3819,21 @@ function renderOrder(){
  <div class="order-detail-grid"><div><div class="orders-panel"><div class="order-section-head"><h3>Items & supplier purchases</h3><span class="orders-muted">${lines.length} line item(s)</span></div><div class="order-progress"><span>1. Verify supplier</span><i class="ti ti-chevron-right"></i><span>2. Review & buy</span><i class="ti ti-chevron-right"></i><span>3. Pay on AliExpress</span><i class="ti ti-chevron-right"></i><span>4. Track & fulfill</span></div>${lines.map(renderOrderLine).join('')}</div>
  <div class="orders-panel"><div class="order-section-head"><h3>Activity</h3></div><div class="order-panel-body"><ul class="order-history">${order.history.map(h=>`<li>${orderEscape(h.message)}<time>${orderEscape(orderDate(h.at))}</time></li>`).join('')||'<li>No activity yet</li>'}</ul></div></div></div>
  <aside class="order-detail-aside"><div class="orders-panel"><div class="order-section-head"><h3>Shopify order</h3></div><div class="order-panel-body"><strong style="font-size:24px">${orderMoney(order.total,order.currency)}</strong><p>Customer payment<br><strong>${orderEscape(orderLabel(order.payment))}</strong></p><p>Shopify fulfillment<br><strong>${orderEscape(orderLabel(order.fulfillment))}</strong></p><hr style="border:0;border-top:1px solid #eee;margin:16px 0"><div>Estimated item gross profit</div><strong class="${profit<0?'order-negative':'order-positive'}" style="font-size:22px">${fullyQuoted?orderMoney(profit,order.currency):'Quote all items'}</strong><p class="orders-muted">Based on item revenue less supplier items and shipping. Taxes, processing, currency conversion and other fees affect actual profit. Different currencies are not combined.</p></div></div>
- <div class="orders-panel"><div class="order-section-head"><h3>Ship to</h3><button class="btn btn-sm" onclick="editOrderAddress()" ${order.privacy_redacted?'disabled':''}>Edit</button></div><div class="order-panel-body"><strong>${orderEscape(address.name||'Address unavailable')}</strong><div>${orderEscape(address.address1)}</div><div>${orderEscape(address.address2)}</div><div>${orderEscape([address.city,address.province,address.zip].filter(Boolean).join(', '))}</div><div>${orderEscape(address.country)}</div><div>${orderEscape(address.phone)}</div><p class="orders-muted">${order.address_overridden?'Edited for supplier purchases only.':'Imported from Shopify.'} Editing does not change Shopify or an existing supplier order.</p></div></div></aside></div>`;
+ <div class="orders-panel"><div class="order-section-head"><h3>Ship to</h3><button class="btn btn-sm" onclick="editOrderAddress()" ${order.privacy_redacted?'disabled':''}>Edit</button></div><div class="order-panel-body">${renderCopyAddress(address,order.privacy_redacted)}<p class="orders-muted">${order.address_overridden?'Edited for supplier purchases only.':'Imported from Shopify.'} Editing does not change Shopify or an existing supplier order.</p></div></div></aside></div>`;
 }
 function renderOrderLine(line){
  const quote=line.quote,created=!!line.supplier_order_id,unresolved=['creating','uncertain'].includes(line.status),locked=created||unresolved||openedOrder.cancelled||line.quantity<=0;
  const image=quote?.image&&/^https:\/\//.test(quote.image)?`<img class="order-item-image" src="${orderEscape(quote.image)}" alt="" loading="lazy" referrerpolicy="no-referrer">`:'<div class="order-item-image" style="display:grid;place-items:center"><i class="ti ti-package" style="font-size:28px;color:#b0a4d7"></i></div>';
  const productUrl=line.supplier_product_url||(line.product_id?`https://www.aliexpress.com/item/${line.product_id}.html`:null);
  return `<article class="order-item"><div class="order-item-head">${image}<div class="order-item-main"><h4>${orderEscape(line.title)}</h4><div class="order-item-meta">${orderEscape(line.variant||'Default variant')} · Qty ${line.quantity} · Revenue ${orderMoney(line.revenue,openedOrder.currency)}</div>${orderPill(line.status)}${line.fulfillment_state==='complete'?'<span class="order-pill delivered">Tracking sent to Shopify</span>':''}</div></div>
- ${line.error?`<div class="orders-notice">${orderEscape(line.error)}</div>`:''}
+ ${orderLineError(line)?`<div class="orders-notice">${orderEscape(orderLineError(line))}</div>`:''}
  ${quote?`<h5>AliExpress supplier</h5><div class="order-item-meta">${orderEscape(quote.title)}<br>Variant: <strong>${orderEscape(quote.variant||quote.sku_attr)}</strong><br>Product ${orderEscape(line.product_id)} · SKU ${orderEscape(line.sku_id)}${quote.stock!==undefined?'<br>Available stock: '+orderEscape(quote.stock):''}</div><div class="order-quote-grid"><div><small>Supplier items</small><strong>${orderMoney(Number(quote.unit_price)*quote.quantity,quote.currency)}</strong></div><div><small>Shipping</small><strong>${orderMoney(quote.shipping.cost,quote.currency)}</strong></div><div><small>Estimated profit</small><strong class="${Number(quote.profit)<0?'order-negative':'order-positive'}">${orderMoney(quote.profit,openedOrder.currency)}</strong></div><div><small>Estimated margin</small><strong>${quote.margin===null?'Unavailable':quote.margin+'%'}</strong></div></div>${quote.price_increased?'<div class="orders-notice">Supplier cost has increased. Review the updated total before purchase.</div>':''}${quote.profit!==null&&Number(quote.profit)<0?'<div class="orders-notice">Negative estimated margin: supplier costs exceed this item’s revenue.</div>':''}`:'<p class="orders-muted">Verify the mapped product and exact variant to see current stock, supplier cost and shipping options.</p>'}
  ${created?`<div class="order-track">AliExpress order <strong>${orderEscape(line.supplier_order_id)}</strong><br>Payment: ${line.payment_confirmed?'Confirmed by AliExpress':'Not confirmed — refresh after payment'}</div>`:''}
  ${created&&line.supplier_total!==null&&line.supplier_total!==undefined?`<div class="order-track">Verified supplier total: ${orderMoney(line.supplier_total,line.supplier_currency)}</div>`:''}
  ${line.tracking.map(t=>`<div class="order-track"><i class="ti ti-truck-delivery"></i> ${orderEscape(t.carrier)} · <strong>${orderEscape(t.number)}</strong></div>`).join('')}
- <div class="orders-actions">${!locked?`<label>Ships from <select id="order-origin-${line.id}">${['CN','US','GB','DE','FR','ES','PL','AU','CA'].map(c=>`<option ${c===(quote?.ship_from||'CN')?'selected':''}>${c}</option>`).join('')}</select></label>${quote?`<select aria-label="Shipping method" id="order-shipping-${line.id}">${quote.methods.map(m=>`<option value="${orderEscape(m.code)}" ${m.code===quote.shipping.code?'selected':''}>${orderEscape(m.code)} · ${orderMoney(m.cost,quote.currency)} · ${orderEscape(m.delivery)}</option>`).join('')}</select>`:''}<button class="btn btn-sm" data-order-action="quote-${line.id}" onclick="quoteOrderLine(${line.id})"><i class="ti ti-refresh"></i> ${quote?'Refresh quote':'Verify supplier'}</button>`:''}
- ${line.status==='needs_mapping'?'<button class="btn btn-sm" onclick="goPage(\'mappings\',null)">Map supplier product <i class="ti ti-link"></i></button>':''}
- ${productUrl?orderExternal(productUrl,'Open product on AliExpress'):''}
- ${line.status==='ready_to_buy'&&line.quote_token&&!locked?`<button class="btn btn-primary btn-sm" onclick="reviewOrderPurchase(${line.id})">Buy on AliExpress <i class="ti ti-arrow-right"></i></button>`:''}
+ <div class="orders-actions">${!locked?`<label>Ships from <select id="order-origin-${line.id}" onchange="changeOrderOrigin(${line.id},this.value)">${['CN','US','GB','DE','FR','ES','PL','AU','CA'].map(c=>`<option ${c===(savedOrderOrigin(line.id)||quote?.ship_from||'CN')?'selected':''}>${c}</option>`).join('')}</select></label>${quote?`<select aria-label="Shipping method" id="order-shipping-${line.id}">${quote.methods.map(m=>`<option value="${orderEscape(m.code)}" ${m.code===quote.shipping.code?'selected':''}>${orderEscape(m.code)} · ${orderMoney(m.cost,quote.currency)} · ${orderEscape(m.delivery)}</option>`).join('')}</select>`:''}<button class="btn btn-sm" data-order-action="quote-${line.id}" onclick="quoteOrderLine(${line.id})"><i class="ti ti-refresh"></i> ${quote?'Refresh quote':'Verify supplier'}</button>`:''}
+ ${line.status==='needs_mapping'?`<button class="btn btn-sm" onclick="mapOrderVariant(${line.id})">Map exact supplier variant <i class="ti ti-link"></i></button>`:''}
+ ${productUrl?orderExternal(productUrl,'Open in AliExpress'):''}
  ${created?orderExternal(line.payment_url||line.orders_url,line.payment_url?'Continue payment':'Open AliExpress orders'):''}
  ${!created&&line.product_id&&line.status!=='creating'?`<button class="btn btn-sm" onclick="attachOrderPurchase(${line.id})">Link existing supplier order</button>`:''}
  ${created&&['shipped','delivered'].includes(line.status)&&line.fulfillment_state!=='complete'?`<button class="btn btn-primary btn-sm" onclick="reviewOrderFulfillment(${line.id})">Send tracking to Shopify</button>`:''}</div>
@@ -3802,13 +3841,14 @@ function renderOrderLine(line){
  </article>`;
 }
 async function refreshOpenedOrder(){if(!openedOrder)return;const id=openedOrder.id,shop=activeShopId;await orderAction('refresh',async()=>{const result=await ordersApi(`/${id}/refresh`,'POST');if(shop!==activeShopId)return;openedOrder=result.order;renderOrder();orderMessage(result.errors.join(' · '))})}
-async function quoteOrderLine(id){const orderId=openedOrder.id;await orderAction('quote-'+id,async()=>{try{await ordersApi(`/lines/${id}/quote`,'POST',{ship_from:document.getElementById('order-origin-'+id).value,shipping_code:document.getElementById('order-shipping-'+id)?.value})}finally{await openOrder(orderId)}})}
+async function quoteOrderLine(id){const orderId=openedOrder.id;await orderAction('quote-'+id,async()=>{try{await ordersApi(`/lines/${id}/quote`,'POST',orderQuoteRequest(id))}finally{await openOrder(orderId)}})}
 function orderDialog(html){const dialog=document.getElementById('order-action-dialog');dialog.innerHTML=html;dialog.showModal()}
 function closeOrderDialog(){document.getElementById('order-action-dialog').close()}
 function editOrderAddress(){const address=openedOrder.address||{};orderDialog(`<h3>Shipping details</h3><p class="orders-muted">Used for future supplier purchases only. Existing supplier orders and Shopify stay unchanged.</p><form id="order-address-form" onsubmit="saveOrderAddress(event)"><div class="order-address-form">${[['name','Recipient name'],['phone_country','Phone country code (e.g. +1)'],['phone','Phone number'],['address1','Street address'],['address2','Apartment / unit'],['city','City'],['province','State / province'],['zip','ZIP / postal code'],['country','Country code (e.g. US)']].map(([key,label])=>`<label>${label}<input name="${key}" value="${orderEscape(address[key]||'')}" maxlength="255" ${['name','address1','city','country','phone','phone_country'].includes(key)?'required':''}></label>`).join('')}</div><p id="order-dialog-error" class="orders-notice" role="alert"></p><div class="order-dialog-footer"><button type="button" class="btn" onclick="closeOrderDialog()">Cancel</button><button class="btn btn-primary" type="submit">Save address</button></div></form>`)}
 async function saveOrderAddress(event){event.preventDefault();const form=event.target,button=form.querySelector('[type=submit]');button.disabled=true;try{await ordersApi(`/${openedOrder.id}/address`,'PUT',Object.fromEntries(new FormData(form)));closeOrderDialog();await openOrder(openedOrder.id)}catch(error){document.getElementById('order-dialog-error').textContent=error.message}finally{button.disabled=false}}
+async function prepareAddressOrder(id){if(openedOrder.address_error){editOrderAddress();document.getElementById('order-dialog-error').textContent=openedOrder.address_error;return}const orderId=openedOrder.id,shop=activeShopId;await orderAction('prepare-'+id,async()=>{try{await ordersApi(`/lines/${id}/quote`,'POST',orderQuoteRequest(id))}finally{if(shop===activeShopId)await openOrder(orderId)}if(shop===activeShopId&&openedOrder?.id===orderId)reviewOrderPurchase(id)})}
 function reviewOrderPurchase(id){const line=openedOrder.lines.find(l=>l.id===id),q=line.quote,address=openedOrder.address;
- orderDialog(`<h3>Review supplier purchase</h3><p><strong>${orderEscape(q.title)}</strong><br>${orderEscape(q.variant)} · ${q.quantity} unit(s)</p><div class="orders-notice">Estimated supplier total: <strong>${orderMoney(q.cost,q.currency)}</strong><br>${orderEscape(q.shipping.code)} · Estimated delivery: ${orderEscape(q.shipping.delivery)}</div><p class="orders-muted">Ship to ${orderEscape(address.name)}, ${orderEscape(address.address1)}, ${orderEscape(address.city)}, ${orderEscape(address.country)}.<br>This creates an unpaid supplier order. You review and pay in your own AliExpress account.</p>${!ordersResult?.purchase_enabled?'<div class="orders-notice">Supplier checkout is not enabled for this installation yet. Contact the store owner to complete checkout verification.</div>':''}<label class="order-confirm"><input type="checkbox" id="order-purchase-confirm">I checked the exact variant, quantity, recipient and current supplier total${Number(q.profit)<0?', including the negative estimated margin':''}.</label><p id="order-dialog-error" class="orders-notice" role="alert"></p><div class="order-dialog-footer"><button class="btn" onclick="closeOrderDialog()">Back</button><button class="btn btn-primary" id="order-purchase-submit" onclick="submitOrderPurchase(${id})" ${!ordersResult?.purchase_enabled?'disabled':''}>Create supplier order</button></div>`)
+ orderDialog(`<h3>Review supplier purchase</h3><div class="order-track"><strong>Purchasing AliExpress account</strong><br>${orderEscape(q.supplier_connection?.label||'Unverified - reconnect AliExpress')}<br>Account ID: ${orderEscape(q.supplier_connection?.account_id||'Unavailable')}</div><p><strong>${orderEscape(q.title)}</strong><br>${orderEscape(q.variant)} · ${q.quantity} unit(s)</p><div class="orders-notice">Estimated supplier total: <strong>${orderMoney(q.cost,q.currency)}</strong><br>${orderEscape(q.shipping.code)} &middot; Estimated delivery: ${orderEscape(q.shipping.delivery)}</div><div class="orders-notice"><strong>AliExpress offers</strong><p>This estimate does not include AliExpress Welcome Deals or additional website promotional offers. To use an eligible offer, open the product on AliExpress, compare the price for the same variant, quantity and delivery address, and place your order directly on AliExpress. Check the final checkout total before paying.</p>${orderExternal(line.supplier_product_url||(/^[0-9]+$/.test(String(q.product_id))?`https://www.aliexpress.com/item/${q.product_id}.html`:null),'Compare price on AliExpress')}</div><div class="order-track"><strong>Customer shipping address</strong><br>${orderEscape(address.name)}<br>${orderEscape(address.address1)}${address.address2?'<br>'+orderEscape(address.address2):''}<br>${orderEscape([address.city,address.province,address.zip].filter(Boolean).join(', '))}<br>${orderEscape(address.country)}<br>Phone: ${orderEscape(address.phone_country)} ${orderEscape(address.phone)}</div><p class="orders-muted">This address is sent to AliExpress when you confirm. It creates an unpaid supplier order; pay for that saved order in your connected AliExpress account. Opening the product listing separately does not transfer the customer address.</p>${!ordersResult?.purchase_enabled?'<div class="orders-notice">Supplier checkout is not enabled for this installation yet. Contact the store owner to complete checkout verification.</div>':''}<label class="order-confirm"><input type="checkbox" id="order-purchase-confirm">I checked the purchasing AliExpress account, exact variant, quantity, recipient and current supplier total${Number(q.profit)<0?', including the negative estimated margin':''}.</label><p id="order-dialog-error" class="orders-notice" role="alert"></p><div class="order-dialog-footer"><button class="btn" onclick="closeOrderDialog()">Back</button><button class="btn btn-primary" id="order-purchase-submit" onclick="submitOrderPurchase(${id})" ${!ordersResult?.purchase_enabled?'disabled':''}>Create supplier order</button></div>`)
 }
 async function submitOrderPurchase(id){if(!document.getElementById('order-purchase-confirm').checked){document.getElementById('order-dialog-error').textContent='Confirm the purchase details first.';return}const button=document.getElementById('order-purchase-submit'),line=openedOrder.lines.find(l=>l.id===id),orderId=openedOrder.id;button.disabled=true;try{const result=await ordersApi(`/lines/${id}/purchase`,'POST',{confirmed:true,quote_token:line.quote_token});closeOrderDialog();await openOrder(orderId);orderMessage(`Supplier order ${result.supplier_order_id} created. Use the payment / AliExpress orders link on this item to continue.`)}catch(error){closeOrderDialog();await openOrder(orderId);orderMessage(error.message)}finally{button.disabled=false}}
 function attachOrderPurchase(id){orderDialog(`<h3>Link an existing AliExpress order</h3><p class="orders-muted">Use this after a manual purchase or an uncertain response. Do not create another supplier order.</p><input id="order-attach-id" inputmode="numeric" placeholder="AliExpress order ID" aria-label="AliExpress order ID"><label class="order-confirm"><input type="checkbox" id="order-attach-confirm">I checked that this order has the correct variant, quantity and recipient address.</label><p id="order-dialog-error" class="orders-notice" role="alert"></p><div class="order-dialog-footer"><button class="btn" onclick="closeOrderDialog()">Cancel</button><button class="btn btn-primary" onclick="submitOrderAttach(${id},this)">Verify & link</button></div>`)}
@@ -3819,6 +3859,25 @@ async function showOrderPrivacy(){await orderAction('privacy',async()=>{const re
 async function downloadOrderPrivacy(id){await orderAction('privacy-export',async()=>{const data=await ordersApi('/privacy-requests/'+id),url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download='customer-data-request-'+id+'.json';a.click();URL.revokeObjectURL(url)})}
 setInterval(()=>{if(document.getElementById('pg-orders')?.classList.contains('active')&&!document.getElementById('order-action-dialog').open&&!openedOrder&&!orderBusy.size)loadOrders()},60000);
 async function downloadOrderReport(){await orderAction('report',async()=>{const data=await ordersApi('/report');const keys=['order','item','quantity','revenue','currency','supplier_currency','estimated_supplier_cost','estimated_profit','status'];const cell=value=>{let s=String(value??'');if(/^[=+@\-\t\r]/.test(s))s="'"+s;return '"'+s.replaceAll('"','""')+'"'};const csv=[keys.join(','),...data.rows.map(row=>keys.map(k=>cell(row[k])).join(','))].join('\r\n');const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'})),a=document.createElement('a');a.href=url;a.download='alisync-estimated-profit.csv';a.click();URL.revokeObjectURL(url);orderMessage('Exported up to 5,000 items. Profit is an estimate; currencies are not converted.');})}
+
+function mapOrderVariant(id){
+ const target=openedOrder?.lines.find(line=>line.id===id)?.mapping_target;
+ if(target&&['mapping','imported'].includes(target.source)&&Number.isInteger(target.id)){
+  openSupplierVariantMapping(target.source,target.id);
+ }else{goPage('mappings',null)}
+}
+
+const orderAddressLabels={name:'Recipient name',address1:'Street address',address2:'Apartment / unit',city:'City',province:'State / province',zip:'ZIP / postal code',country:'Country',phone_country:'Phone country code',phone:'Phone number'};
+function renderCopyAddress(address,redacted=false){
+ if(redacted)return '<p class="orders-muted">Customer address unavailable.</p>';
+ return Object.entries(orderAddressLabels).filter(([key])=>String(address[key]||'').trim()).map(([key,label])=>`<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px"><div style="min-width:0;overflow-wrap:anywhere"><small class="orders-muted">${label}</small><div>${orderEscape(address[key])}</div></div><button type="button" class="btn btn-sm" aria-label="Copy ${label}" onclick="copyOrderAddressField('${key}',this)">Copy</button></div>`).join('')||'<p class="orders-muted">Address unavailable.</p>';
+}
+async function copyOrderAddressField(key,button){
+ if(!Object.prototype.hasOwnProperty.call(orderAddressLabels,key)||openedOrder?.privacy_redacted)return;
+ const value=String(openedOrder?.address?.[key]||'');if(!value)return;
+ try{await navigator.clipboard.writeText(value);button.textContent='Copied';setTimeout(()=>{button.textContent='Copy'},1800)}
+ catch(error){orderDialog(`<h3>Copy ${orderAddressLabels[key]}</h3><p>Select the value below and press Ctrl+C (or Command+C).</p><textarea id="order-copy-value" readonly style="width:100%;box-sizing:border-box;padding:12px">${orderEscape(value)}</textarea><div class="order-dialog-footer"><button class="btn" onclick="closeOrderDialog()">Close</button></div>`);const field=document.getElementById('order-copy-value');field.focus();field.select()}
+}
 </script>
 <!-- END GENERATED ORDERS JS -->
 </body>

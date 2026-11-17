@@ -32,6 +32,16 @@ class BillingTests(unittest.TestCase):
         self.settings = SimpleNamespace(SHOPIFY_BILLING_MODE="manual", BILLING_ENABLED=True, SHOPIFY_BILLING_TEST=False, SHOPIFY_CLIENT_ID="app")
         self.enterContext(patch.object(billing, "get_settings", return_value=self.settings))
 
+    def test_partial_entitlements_allow_free_access_for_other_app_without_paid_access(self):
+        self.shop.shopify_client_id='another-app'
+        self.shop.plan_name='pro';self.shop.subscription_status='active'
+        self.db.commit()
+        warnings=billing.reconcile(self.db,self.shop,allow_partial=True)
+        self.assertEqual(len(warnings),1)
+        self.assertEqual(plan_name(self.shop),'free')
+        self.api.assert_not_called()
+        with self.assertRaises(HTTPException):billing.reconcile(self.db,self.shop)
+
     def managed_settings(self):
         self.settings.SHOPIFY_BILLING_MODE = "app_pricing"
         self.settings.SHOPIFY_APP_HANDLE = "alisync-1"

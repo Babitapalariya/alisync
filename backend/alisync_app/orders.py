@@ -3,6 +3,7 @@ import hashlib
 import json
 import re
 import secrets
+import requests
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -50,17 +51,40 @@ def event(db, order, message, line=None):
 
 def address_of(order):
     value = order.address_override_encrypted or order.address_encrypted
-    return json.loads(decrypt_secret(value)) if value else {}
+    address = json.loads(decrypt_secret(value)) if value else {}
+    # Recover a missing dial code only from a valid number, never invent a phone.
+    if address.get("phone") and not address.get("phone_country"):
+        import phonenumbers
+        try:
+            phone = phonenumbers.parse(address["phone"], address.get("country"))
+            if phonenumbers.is_valid_number(phone):
+                address["phone_country"] = "+" + str(phone.country_code)
+                address["phone"] = str(phone.national_number)
+        except phonenumbers.NumberParseException:
+            pass
+    return address
 
 
 def validate_address(address):
-    fields = ("name", "address1", "city", "country", "phone", "phone_country")
-    if any(not str(address.get(k, "")).strip() for k in fields):
-        raise HTTPException(409, "Complete the recipient name, street, city, country, phone and phone country code first")
-    if not re.fullmatch(r"[A-Z]{2}", address["country"]) or not re.fullmatch(r"\+?\d{1,4}", address["phone_country"]):
-        raise HTTPException(400, "Use a two-letter country code and a numeric phone country code")
-    if not re.fullmatch(r"[\d ()+.-]{5,30}", address["phone"]):
-        raise HTTPException(400, "Enter a valid recipient phone number")
+    labels = {"name": "recipient name", "address1": "street address", "city": "city",
+              "country": "country", "phone": "recipient phone number"}
+    missing = [label for key, label in labels.items() if not str(address.get(key) or "").strip()]
+    if missing:
+        raise HTTPException(409, "Shipping address: missing " + ", ".join(missing) + ". Use Ship to > Edit.")
+    if not re.fullmatch(r"[A-Z]{2}", str(address["country"])):
+        raise HTTPException(400, "Shipping address: use a two-letter country code. Use Ship to > Edit.")
+    import phonenumbers
+    raw = str(address["phone"]).strip()
+    dial = str(address.get("phone_country") or "").strip()
+    try:
+        number = phonenumbers.parse(raw if raw.startswith("+") or not dial else "+" + dial.lstrip("+") + raw,
+                                    address["country"] if not dial else None)
+        if not phonenumbers.is_valid_number(number):
+            raise ValueError()
+    except (phonenumbers.NumberParseException, ValueError):
+        raise HTTPException(409, "Shipping address: enter the customer's valid phone number and country calling code in Ship to > Edit. Placeholder numbers such as all zeros cannot be used.")
+    if not re.fullmatch(r"\+?\d{1,4}", dial) or int(dial) != number.country_code:
+        raise HTTPException(409, "Shipping address: missing or incorrect phone country calling code. Use Ship to > Edit.")
 
 
 def owned_order(db, shop, order_id, lock=False):
@@ -171,6 +195,30 @@ def ingest(db, shop, data):
 
 def sync_error_message(exc):
     detail = str(getattr(exc, "detail", ""))
+    if isinstance(exc, requests.Timeout):
+        return "Shopify order sync timed out. Retry shortly; reconnecting is not normally required for a timeout."
+    if isinstance(exc, requests.ConnectionError):
+        return "Could not reach Shopify during order sync. Check server connectivity and retry shortly."
+    response = getattr(exc, "response", None)
+    status = response.status_code if response is not None else getattr(exc, "status_code", None)
+    if status == 401:
+        return "Shopify authorization expired or was rejected. Reconnect Shopify for this store, then retry order sync."
+    if status == 429 or "THROTTLED" in detail:
+        return "Shopify rate limit reached. Order sync will retry after the cooldown."
+    if status == 403:
+        return "Shopify denied order access. Review this store's app permissions and customer data approval."
+    if response is not None and status >= 500:
+        return "Shopify returned a temporary server error. Retry order sync shortly."
+    # Preserve our safe messages when the background worker catches sync_shop's HTTPException.
+    if detail in {
+        "Shopify order sync timed out. Retry shortly; reconnecting is not normally required for a timeout.",
+        "Could not reach Shopify during order sync. Check server connectivity and retry shortly.",
+        "Shopify authorization expired or was rejected. Reconnect Shopify for this store, then retry order sync.",
+        "Shopify rate limit reached. Order sync will retry after the cooldown.",
+        "Shopify denied order access. Review this store's app permissions and customer data approval.",
+        "Shopify returned a temporary server error. Retry order sync shortly.",
+    }:
+        return detail
     if "read_customers" in detail and ("Access denied" in detail or "permission" in detail):
         return ("Shopify is missing read_customers permission. Add read_customers to the Shopify app version, "
                 "release it, approve the updated permissions for this store, then reconnect Shopify and sync again.")
@@ -289,14 +337,18 @@ def save_quote(db, order, line, quote, from_purchase=False):
 
 
 def quote_signature(quote):
-    return {k: quote.get(k) for k in ("product_id", "sku_id", "sku_attr", "unit_price", "quantity", "currency", "shipping", "address_hash", "cost", "ship_from")}
+    return {k: quote.get(k) for k in ("product_id", "sku_id", "sku_attr", "unit_price", "quantity", "currency", "shipping", "address_hash", "cost", "ship_from", "supplier_connection")}
 
 
 def refresh_supplier(db, shop, line, order):
     if not line.supplier_order_id:
         return
     db.info.update(user_id=shop.user_id, shop_id=shop.id)
-    result = supplier.status(db, line.supplier_order_id)
+    expected = (line.quote or {}).get("supplier_connection")
+    current = supplier.connection(db)
+    if not expected or current["account_id"] != expected["account_id"]:
+        raise HTTPException(409, "Supplier order account cannot be verified against the current connection. Review the original AliExpress account before syncing this order.")
+    result = supplier.status(db, line.supplier_order_id, expected_connection=current)
     old = line.status
     old_paid, old_tracking = line.payment_confirmed, line.tracking
     # Never undo a confirmed delivery based on a delayed supplier response.
@@ -341,15 +393,18 @@ def serialized_order(db, row, detail=False):
     if detail:
         # Listing links need only the saved import mapping, not a live quote or SKU lookup.
         mapped_ids = {}
+        mapping_targets = {}
         product_ids = {line.product_id for line in lines if line.product_id}
         for model in (Product, Mapping):
             for mapped in db.query(model).filter(model.shop_id == row.shop_id,
                     model.user_id == row.user_id, model.shopify_product_id.in_(product_ids)).all():
                 mapped_ids.setdefault(str(mapped.shopify_product_id), set()).add(str(mapped.aliexpress_id))
+                mapping_targets.setdefault(str(mapped.shopify_product_id), {"source": "imported" if model is Product else "mapping", "id": mapped.id})
         serialized_lines = []
         for line in lines:
             item = serialized_line(line)
             candidates = mapped_ids.get(str(line.product_id), set())
+            item["mapping_target"] = mapping_targets.get(str(line.product_id)) if len(candidates) == 1 else None
             supplier_id = line.supplier_product_id or (next(iter(candidates)) if len(candidates) == 1 else None)
             item["supplier_product_url"] = (
                 f"https://www.aliexpress.com/item/{supplier_id}.html"
@@ -357,6 +412,11 @@ def serialized_order(db, row, detail=False):
             serialized_lines.append(item)
         result.update(address=address_of(row), address_overridden=bool(row.address_override_encrypted),
                       lines=serialized_lines, privacy_redacted=row.privacy_redacted)
+        try:
+            validate_address(result["address"])
+            result["address_error"] = None
+        except HTTPException as exc:
+            result["address_error"] = str(exc.detail)
         result["history"] = [{"message": a.message, "at": a.created_at} for a in db.query(OrderActivity).filter_by(order_id=row.id).order_by(OrderActivity.id.desc()).limit(100)]
     return result
 
@@ -535,7 +595,11 @@ def attach_supplier_order(line_id: int, payload: dict, db: Session = Depends(get
     if existing:
         raise HTTPException(409, "This supplier order is already linked to another item")
     db.info.update(user_id=shop.user_id, shop_id=shop.id)
-    verified = supplier.status(db, order_id)
+    current = supplier.connection(db)
+    expected = (line.quote or {}).get("supplier_connection")
+    if not expected or current["account_id"] != expected["account_id"]:
+        raise HTTPException(409, "AliExpress account changed. Verify the original purchasing account before linking an order.")
+    verified = supplier.status(db, order_id, expected_connection=current)
     children = verified["children"]
     if len(children) != 1 or str(children[0].get("product_id")) != line.supplier_product_id or int(children[0].get("product_count", 0)) != (line.quote or {}).get("quantity", line.quantity):
         raise HTTPException(409, "Supplier order product and quantity do not match this item")
@@ -682,16 +746,22 @@ def sync_orders_background():
                     order = db.get(StoreOrder, line.order_id)
                     if order.privacy_redacted:
                         continue
-                    refresh_supplier(db, shop, line, order)
-                    if get_settings().ORDER_AUTO_FULFILL and line.status in ("shipped", "delivered") and line.fulfillment_state != "complete":
-                        fulfill_line(db, shop, line, order)
+                    try:
+                        refresh_supplier(db, shop, line, order)
+                        if get_settings().ORDER_AUTO_FULFILL and line.status in ("shipped", "delivered") and line.fulfillment_state != "complete":
+                            fulfill_line(db, shop, line, order)
+                    except Exception:
+                        db.rollback()
+                        # Supplier errors must not mark a successful Shopify import as failed.
+                        if line.status != "uncertain" and line.fulfillment_state != "uncertain":
+                            line.error = "Supplier status or tracking sync failed. Refresh this order after checking the AliExpress connection."
+                            db.commit()
             except Exception as exc:
                 db.rollback()
                 state = db.get(OrderSyncState, shop.id)
-                if state:
+                if state and (not isinstance(exc, HTTPException) or exc.status_code != 429):
                     state.retry_after = now() + timedelta(minutes=5)
-                    if not isinstance(exc, HTTPException) or exc.status_code != 429:
-                        state.error = sync_error_message(exc)
+                    state.error = sync_error_message(exc)
                     db.commit()
             # Customer data exports are temporary merchant downloads, not permanent copies.
         db.query(OrderPrivacyRequest).filter(OrderPrivacyRequest.created_at < now() - timedelta(days=30)).delete(synchronize_session=False)

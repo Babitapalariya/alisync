@@ -17,9 +17,15 @@ def get_latest_token(db: Session, shop_id: int | None = None) -> AliExpressToken
             db.info["user_id"] = user_id
     if not user_id:
         raise HTTPException(401, "Authenticated user context is required")
+    selected_shop_id = shop_id or db.info.get("shop_id")
+    if selected_shop_id:
+        selected_shop = db.get(Shop, selected_shop_id)
+        if not selected_shop or selected_shop.user_id != user_id:
+            raise HTTPException(403, "AliExpress user and Shopify store context do not match")
     token = (
         db.query(AliExpressToken)
         .filter(AliExpressToken.user_id == user_id)
+        .populate_existing()
         .order_by(AliExpressToken.updated_at.desc())
         .first()
     )

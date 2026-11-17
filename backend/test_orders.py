@@ -12,7 +12,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 from alisync_app.database import Base, get_db
-from alisync_app.models import User, Shop, Mapping, StoreOrder, StoreOrderLine, OrderActivity, OrderFulfillment, OrderRedactedCustomer
+from alisync_app.models import User, Shop, Product, Mapping, StoreOrder, StoreOrderLine, OrderActivity, OrderFulfillment, OrderRedactedCustomer
 from alisync_app import orders
 from alisync_app import order_supplier as supplier
 
@@ -48,6 +48,8 @@ class OrderTests(unittest.TestCase):
         self.quote={'product_id':'123456','sku_id':'sku-1','sku_attr':'14:193','title':'Supplier tire','variant':'Black','image':None,
             'unit_price':'14.0000','quantity':2,'currency':'USD','methods':[{'code':'STANDARD','cost':'5.0000','delivery':'8-15 days'}],
             'ship_from':'CN','product_url':'https://www.aliexpress.com/item/123456.html'}
+        self.quote['supplier_connection']={'account_id':'buyer-A','label':'Buyer A','binding':'test-A'}
+        self.enterContext(patch.object(supplier,'connection',return_value=self.quote['supplier_connection']))
         self.quote_mock=self.enterContext(patch.object(supplier,'quote',side_effect=lambda *a:copy.deepcopy(self.quote)))
         self.create_mock=self.enterContext(patch.object(supplier,'create',return_value={'order_id':'999999','payment_url':None}))
         self.address=orders.address_of(self.order);self.address.update(phone_country='+1',phone='2025550123')
@@ -64,6 +66,15 @@ class OrderTests(unittest.TestCase):
 
     def purchase(self, token=None):
         return orders.purchase_line(self.line.id,{'confirmed':True,'quote_token':token or self.line.quote_token},self.db,self.shop)
+
+    def test_discounted_unit_price_is_used_for_purchase(self):
+        self.quote.update(unit_price='7.5000', original_unit_price='10.00', discount='25.00%')
+        self.prepare()
+        self.purchase()
+        prepared=self.create_mock.call_args.args[1]
+        self.assertEqual(prepared['unit_price'],'7.5000')
+        self.assertEqual(prepared['cost'],'20.0000')
+        self.assertEqual(prepared['sku_id'],'sku-1')
 
     def test_ingestion_is_idempotent_and_store_scoped(self):
         orders.ingest(self.db,self.shop,self.data)
@@ -187,6 +198,7 @@ class OrderTests(unittest.TestCase):
     def test_listing_link_available_before_quote_without_supplier_api(self):
         detail = orders.serialized_order(self.db, self.order, True)
         self.assertEqual(detail['lines'][0]['supplier_product_url'], 'https://www.aliexpress.com/item/123456.html')
+        self.assertEqual(detail['lines'][0]['mapping_target']['source'],'mapping')
         self.assertIsNone(self.line.supplier_product_id)
         self.quote_mock.assert_not_called()
 
@@ -196,7 +208,7 @@ class OrderTests(unittest.TestCase):
         self.db.commit()
         self.assertIsNone(orders.serialized_order(self.db,self.order,True)['lines'][0]['supplier_product_url'])
         self.db.add_all([Mapping(user_id=1,shop_id=1,aliexpress_id='888',shopify_product_id='10'),
-                         Mapping(user_id=1,shop_id=1,aliexpress_id='999',shopify_product_id='10')])
+                         Product(user_id=1,shop_id=1,aliexpress_id='999',shopify_product_id='10',title='Imported item')])
         self.db.commit()
         self.assertIsNone(orders.serialized_order(self.db,self.order,True)['lines'][0]['supplier_product_url'])
 
@@ -205,6 +217,41 @@ class OrderTests(unittest.TestCase):
         self.db.commit()
         self.assertEqual(orders.serialized_order(self.db,self.order,True)['lines'][0]['supplier_product_url'],
                          'https://www.aliexpress.com/item/111.html')
+
+    def test_placeholder_phone_reports_actionable_error_before_quote(self):
+        address=dict(self.address,phone='0000000000',phone_country='')
+        with self.assertRaises(HTTPException) as error:orders.validate_address(address)
+        self.assertIn('valid phone number',error.exception.detail)
+        self.order.address_override_encrypted=orders.encrypt_secret(json.dumps(address))
+        self.db.commit()
+        detail=orders.serialized_order(self.db,self.order,True)
+        self.assertIn('Ship to > Edit',detail['address_error'])
+
+    def test_valid_phone_recovers_missing_dial_code_without_fabricating_number(self):
+        address=dict(self.address,phone='+12025550123',phone_country='')
+        self.order.address_override_encrypted=orders.encrypt_secret(json.dumps(address))
+        normalized=orders.address_of(self.order)
+        self.assertEqual(normalized['phone_country'],'+1')
+        self.assertEqual(normalized['phone'],'2025550123')
+        orders.validate_address(normalized)
+
+    def test_sync_errors_distinguish_transient_and_auth_failures(self):
+        import requests
+        timeout_message=orders.sync_error_message(requests.Timeout())
+        self.assertIn('timed out',timeout_message)
+        self.assertEqual(orders.sync_error_message(HTTPException(502,timeout_message)),timeout_message)
+        response=requests.Response();response.status_code=401
+        self.assertIn('Reconnect Shopify',orders.sync_error_message(requests.HTTPError(response=response)))
+        response.status_code=429
+        self.assertIn('rate limit',orders.sync_error_message(requests.HTTPError(response=response)))
+        response.status_code=503
+        self.assertIn('temporary server error',orders.sync_error_message(requests.HTTPError(response=response)))
+
+    def test_changed_supplier_connection_invalidates_purchase_quote(self):
+        self.prepare()
+        self.quote['supplier_connection']={'account_id':'buyer-B','label':'Buyer B','binding':'test-B'}
+        with self.assertRaises(HTTPException):self.purchase()
+        self.create_mock.assert_not_called()
 
     def test_api_cross_store_isolation(self):
         app=FastAPI();app.include_router(orders.router)
@@ -254,6 +301,63 @@ class OrderTests(unittest.TestCase):
 
 
 class SupplierAdapterTests(unittest.TestCase):
+    def setUp(self):
+        self.account={'account_id':'buyer-A','label':'Buyer A','binding':'test-A'}
+        self.connection_mock=self.enterContext(patch.object(supplier,'connection',return_value=self.account))
+
+    def test_create_blocks_account_change_without_sending_request(self):
+        self.connection_mock.return_value={'account_id':'buyer-B','label':'Buyer B','binding':'test-B'}
+        with patch.object(supplier,'call') as api:
+            with self.assertRaises(HTTPException):supplier.create(None,{'supplier_connection':self.account},{},'test')
+            api.assert_not_called()
+
+    def test_call_blocks_last_moment_token_change(self):
+        token=SimpleNamespace(account_id='buyer-B',account_label='Buyer B',oauth_app_key='key',access_token='token-B')
+        with patch.object(supplier,'get_latest_token',return_value=token), patch.object(supplier,'get_aliexpress_credentials',return_value=('key','secret','callback')), patch.object(supplier,'_call') as api:
+            with self.assertRaises(HTTPException):supplier.call(None,'aliexpress.trade.buy.placeorder',{},expected_connection=self.account)
+            api.assert_not_called()
+
+    def test_unknown_account_cannot_be_used_for_checkout(self):
+        token=SimpleNamespace(account_id=None,account_label=None,oauth_app_key=None,access_token='legacy')
+        with self.assertRaises(HTTPException):supplier.connection_identity(token,'key')
+
+    def test_missing_freight_does_not_claim_destination_is_unsupported(self):
+        product={'skus':[{'sku_id':'1','sku_attr':'14:193','stock':2,'price':'10','currency':'USD'}]}
+        with patch.object(supplier,'get_product',return_value=product), patch.object(supplier,'call',return_value={'success':False,'error_desc':'queryShippingOptionForItem return null'}):
+            with self.assertRaises(HTTPException) as error:
+                supplier.quote(None,'123','1',1,{'country':'US'},'US')
+            self.assertIn('US to US',error.exception.detail)
+            self.assertIn('does not confirm',error.exception.detail)
+
+    def test_ds_freight_uses_exact_sku_and_preserves_decimal_amount(self):
+        product={'skus':[{'sku_id':'1','sku_attr':'14:193','stock':18,'price':'10','currency':'USD'}]}
+        response={'success':True,'delivery_options':{'delivery_option_d_t_o':[{
+            'code':'AE_US_SAVER','shipping_fee_currency':'USD','free_shipping':False,
+            'ship_from_country':'US','available_stock':'18','shipping_fee_cent':'2.99','delivery_date_desc':'8-13 days'}]}}
+        with patch.object(supplier,'get_product',return_value=product), patch.object(supplier,'call',return_value=response) as api:
+            quote=supplier.quote(None,'123','1',1,{'country':'US'},'US')
+            self.assertEqual(quote['methods'][0]['cost'],'2.9900')
+            self.assertEqual(quote['methods'][0]['code'],'AE_US_SAVER')
+            self.assertEqual(api.call_args.args[1],'aliexpress.ds.freight.query')
+            request=json.loads(api.call_args.args[2]['queryDeliveryReq'])
+            self.assertEqual(request['selectedSkuId'],'1')
+            self.assertEqual(request['quantity'],1)
+            with self.assertRaises(HTTPException) as error:supplier.quote(None,'123','1',1,{'country':'US'},'CN')
+            self.assertIn('US',error.exception.detail)
+
+    def test_explicit_free_shipping_without_currency_is_accepted(self):
+        product={'skus':[{'sku_id':'1','sku_attr':'14:193','stock':49,'price':'10','currency':'USD'}]}
+        option={'code':'FEDEX_US','free_shipping':True,'ship_from_country':'US','available_stock':'49','delivery_date_desc':'2-8 days'}
+        response={'success':True,'delivery_options':{'delivery_option_d_t_o':[option]}}
+        with patch.object(supplier,'get_product',return_value=product),patch.object(supplier,'call',return_value=response):
+            quote=supplier.quote(None,'123','1',1,{'country':'US'},'US')
+            self.assertEqual(quote['methods'][0]['cost'],'0.0000')
+            self.assertEqual(quote['methods'][0]['code'],'FEDEX_US')
+            option['free_shipping']=False
+            with self.assertRaises(HTTPException):supplier.quote(None,'123','1',1,{'country':'US'},'US')
+            option['free_shipping']='true'
+            with self.assertRaises(HTTPException):supplier.quote(None,'123','1',1,{'country':'US'},'US')
+
     def test_payment_links_are_only_https_aliexpress(self):
         self.assertIsNone(supplier.safe_payment_url('https://aliexpress.com.evil.test/pay'))
         self.assertIsNone(supplier.safe_payment_url('javascript:alert(1)'))
@@ -267,13 +371,17 @@ class SupplierAdapterTests(unittest.TestCase):
             with self.assertRaises(HTTPException):supplier.status(None,'1')
 
     def test_supplier_create_payload_uses_exact_variant_and_address(self):
-        prepared={'product_id':'123','sku_attr':'14:193','quantity':2,'shipping':{'code':'STANDARD'}}
-        address={'name':'Buyer','address1':'123 Test','city':'Test','country':'US','phone':'123456789','phone_country':'+1'}
+        prepared={'supplier_connection':self.account,'product_id':'123','sku_attr':'14:193','quantity':2,'shipping':{'code':'STANDARD'}}
+        address={'name':'Buyer','address1':'123 Test','city':'Test','country':'US','phone':'123456789','phone_country':'+1','address2':'Unit 4','province':'CA','zip':'90001'}
         with patch.object(supplier,'call',return_value={'is_success':True,'order_list':{'number':[999999]}}) as api:
             result=supplier.create(None,prepared,address,'test')
             payload=json.loads(api.call_args.args[2]['param_place_order_request4_open_api_d_t_o'])
             self.assertEqual(payload['product_items'][0]['sku_attr'],'14:193')
             self.assertEqual(payload['logistics_address']['address'],'123 Test')
+            for key in ['address2','city','province','zip','country','phone_country']:
+                self.assertEqual(payload['logistics_address'][key],address[key])
+            self.assertEqual(payload['logistics_address']['mobile_no'],address['phone'])
+            self.assertEqual(payload['logistics_address']['contact_person'],address['name'])
             self.assertEqual(result['order_id'],'999999');self.assertIsNone(result['payment_url'])
 
 

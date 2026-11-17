@@ -376,6 +376,9 @@ def connection_status(shop_id: int | None = None, db: Session = Depends(get_db),
         },
         "aliexpress": {
             "connected": bool(ali_token and ali_token.access_token),
+            "account_id": ali_token.account_id if ali_token else None,
+            "account_label": ali_token.account_label if ali_token else None,
+            "identity_verified": bool(ali_token and ali_token.account_id and ali_credentials and ali_token.oauth_app_key == ali_credentials.app_key),
             "pending": not bool(ali_token and ali_token.access_token),
             "credentials_configured": bool(ali_credentials),
             "app_key_hint": ("***" + ali_credentials.app_key[-4:]) if ali_credentials else None,
@@ -583,6 +586,9 @@ def exchange_aliexpress_code(db: Session, user: User, code: str) -> AliExpressTo
     token = db.query(AliExpressToken).filter(AliExpressToken.user_id == user.id).first()
     if not token:
         token = AliExpressToken(user_id=user.id, access_token=data["access_token"]); db.add(token)
+    token.account_id = str(data["user_id"]) if data.get("user_id") else None
+    token.account_label = str(data.get("user_nick") or token.account_id or "")[:255] or None
+    token.oauth_app_key = credentials.app_key
     token.access_token = data.get("access_token") or token.access_token
     token.refresh_token = data.get("refresh_token") or token.refresh_token
     token.expires_in = data.get("expires_in")
@@ -620,7 +626,10 @@ def refresh_aliexpress_token(db: Session = Depends(get_db), user: User = Depends
         "refresh_token": token.refresh_token}, timeout=30)
     if not response.ok:
         raise HTTPException(502, f"AliExpress refresh failed: {response.text}")
-    data = response.json(); token.access_token = data.get("access_token") or token.access_token
+    data = response.json()
+    if data.get("user_id") and str(data["user_id"]) != token.account_id:
+        token.account_id = None; token.account_label = None; token.oauth_app_key = None
+    token.access_token = data.get("access_token") or token.access_token
     token.refresh_token = data.get("refresh_token") or token.refresh_token; token.expires_in = data.get("expires_in")
     db.commit()
     return {"message": "AliExpress token refreshed", "expires_in": token.expires_in}
@@ -630,6 +639,7 @@ def refresh_aliexpress_token(db: Session = Depends(get_db), user: User = Depends
 def save_aliexpress_token(payload: TokenRequest, db: Session = Depends(get_db), user: User = Depends(current_user)):
     token = db.query(AliExpressToken).filter(AliExpressToken.user_id == user.id).first()
     if not token: token = AliExpressToken(user_id=user.id, access_token=payload.access_token); db.add(token)
+    token.account_id = None; token.account_label = None; token.oauth_app_key = None
     token.access_token = payload.access_token; token.refresh_token = payload.refresh_token; token.expires_in = payload.expires_in
     db.commit(); return {"message": "AliExpress account connected"}
 

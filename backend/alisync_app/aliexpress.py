@@ -1,3 +1,4 @@
+from .pricing import product_pricing
 """
 AliExpress DS Dropshipping API client — fully corrected based on actual API response.
 
@@ -421,6 +422,18 @@ def _parse_inventory(result: dict, sku_list: list) -> dict:
 # Product parser
 # ─────────────────────────────────────────────
 
+def _promotion_display(sale_price):
+    """Additional deals are unknown unless a source verifies price and eligibility."""
+    return {
+        "promotional_price": None,
+        "promotion_type": None,
+        "promotion_eligibility": "unknown",
+        "promotion_status": "not_exposed_by_current_source",
+        "final_display_price": sale_price,
+        "final_display_price_source": "api_sale_price_fallback",
+    }
+
+
 def _parse_product(raw: dict, ship_to_country: str = "US") -> dict:
     result = (
         raw
@@ -476,6 +489,20 @@ def _parse_product(raw: dict, ship_to_country: str = "US") -> dict:
     kept_ids = {s.get("sku_id") for s in skus}
     filtered_sku_list = [s for s in sku_list if s.get("sku_id") in kept_ids]
 
+    pricing = product_pricing(skus, product)
+    # DS supplies offer_sale_price, not verified browser/account promotion eligibility.
+    # Keep additional promotion fields unknown rather than re-discounting sale_price.
+    for sku in skus:
+        sku.update(_promotion_display(sku.get("final_price")))
+    display = _promotion_display(pricing.get("sale_price"))
+    display["pricing_context"] = {
+        "source": "aliexpress.ds.product.get",
+        "ship_to_country": ship_to_country,
+        "currency": pricing.get("currency"),
+        "browser_session_matched": False,
+        "checkout_price_verified": False,
+        "summary_basis": "lowest_returned_sku" if pricing.get("sale_price") is not None else "unavailable",
+    }
     shipping  = _parse_freight(result)
     inventory = _parse_inventory(result, filtered_sku_list)
 
@@ -488,10 +515,8 @@ def _parse_product(raw: dict, ship_to_country: str = "US") -> dict:
         "store_name":   store.get("store_name") or product.get("store_name"),
 
         # Pricing
-        "original_price": product.get("original_price"),
-        "sale_price":     product.get("sale_price"),
-        "currency":       product.get("currency_code"),
-        "discount":       product.get("discount"),
+        **pricing,
+        **display,
 
         # Media
         "main_image":  images.split(";")[0] if images else product.get("main_image"),

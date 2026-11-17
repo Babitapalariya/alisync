@@ -86,10 +86,18 @@ def reconcile_managed(db, shop, allow_partial):
 
 def reconcile(db, shop, *, allow_partial=False):
     """Shopify billing belongs to the selected installation, never the account."""
+    connection_error = None
     if shop.shopify_client_id and shop.shopify_client_id != get_settings().SHOPIFY_CLIENT_ID:
-        raise HTTPException(409, "Reconnect this store using the AliSync Partner app")
-    if not shop.is_active or not shop.access_token:
-        raise HTTPException(409, "Reconnect this Shopify store to verify billing")
+        connection_error = "Reconnect this store using the AliSync Partner app"
+    elif not shop.is_active or not shop.access_token:
+        connection_error = "Reconnect this Shopify store to verify billing"
+    if connection_error:
+        if not allow_partial:
+            raise HTTPException(409, connection_error)
+        # Entitlements can still describe Free access without granting an unverified paid plan.
+        shop.subscription_status = "unverified"
+        db.commit()
+        return [{"shop_id": shop.id, "shop_domain": shop.shop_domain, "message": connection_error}]
     if get_settings().SHOPIFY_BILLING_MODE == "app_pricing":
         return reconcile_managed(db, shop, allow_partial)
     try:
