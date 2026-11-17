@@ -15,6 +15,7 @@ from .notification_routes import router as notification_router
 from .shopify_webhooks import router as shopify_webhook_router
 from .shopify_session import router as shopify_session_router
 from .orders import router as orders_router
+from .order_routes import include_order_routes
 
 Base.metadata.create_all(bind=engine, checkfirst=True)
 add_missing_columns()
@@ -34,7 +35,7 @@ app.add_middleware(
 @app.middleware("http")
 async def order_privacy_headers(request: Request, call_next):
     response = await call_next(request)
-    if request.url.path.startswith("/app/orders"):
+    if request.url.path.startswith(("/app/orders", "/api/orders")):
         response.headers["Cache-Control"] = "private, no-store"
     return response
 
@@ -81,4 +82,4 @@ app.include_router(notification_router)
 app.include_router(shopify_webhook_router)
 app.include_router(shopify_session_router)
 
-app.include_router(orders_router)
+include_order_routes(app, orders_router)
