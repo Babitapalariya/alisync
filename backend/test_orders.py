@@ -202,6 +202,13 @@ class OrderTests(unittest.TestCase):
         self.assertIsNone(self.line.supplier_product_id)
         self.quote_mock.assert_not_called()
 
+    def test_listing_link_matches_graphql_product_id(self):
+        self.db.query(Mapping).one().shopify_product_id='gid://shopify/Product/10'
+        self.db.commit()
+        detail=orders.serialized_order(self.db,self.order,True)
+        self.assertEqual(detail['lines'][0]['supplier_product_url'],'https://www.aliexpress.com/item/123456.html')
+        self.assertEqual(orders.mapping_for(self.db,self.shop,self.line),('123456','sku-1'))
+
     def test_listing_link_does_not_use_other_store_or_conflicting_mapping(self):
         self.db.query(Mapping).delete()
         self.db.add(Mapping(user_id=1,shop_id=2,aliexpress_id='777',shopify_product_id='10'))

@@ -270,10 +270,15 @@ def sync_shop(db, shop):
         raise HTTPException(502, state.error)
 
 
+def product_id_forms(value):
+    normalized = ident(value)
+    return {normalized, f"gid://shopify/Product/{normalized}"} if normalized.isdigit() else {str(value)}
+
+
 def mapping_for(db, shop, line):
     candidates = []
     for model in (Product, Mapping):
-        candidates.extend(db.query(model).filter_by(shop_id=shop.id, user_id=shop.user_id, shopify_product_id=line.product_id).all())
+        candidates.extend(db.query(model).filter(model.shop_id == shop.id, model.user_id == shop.user_id, model.shopify_product_id.in_(product_id_forms(line.product_id))).all())
     ids = {r.aliexpress_id for r in candidates}
     if len(ids) != 1:
         raise HTTPException(409, "Map Supplier Product: this Shopify product needs one unambiguous supplier mapping")
@@ -394,17 +399,17 @@ def serialized_order(db, row, detail=False):
         # Listing links need only the saved import mapping, not a live quote or SKU lookup.
         mapped_ids = {}
         mapping_targets = {}
-        product_ids = {line.product_id for line in lines if line.product_id}
+        product_ids = {value for line in lines if line.product_id for value in product_id_forms(line.product_id)}
         for model in (Product, Mapping):
             for mapped in db.query(model).filter(model.shop_id == row.shop_id,
                     model.user_id == row.user_id, model.shopify_product_id.in_(product_ids)).all():
-                mapped_ids.setdefault(str(mapped.shopify_product_id), set()).add(str(mapped.aliexpress_id))
-                mapping_targets.setdefault(str(mapped.shopify_product_id), {"source": "imported" if model is Product else "mapping", "id": mapped.id})
+                mapped_ids.setdefault(ident(mapped.shopify_product_id), set()).add(str(mapped.aliexpress_id))
+                mapping_targets.setdefault(ident(mapped.shopify_product_id), {"source": "imported" if model is Product else "mapping", "id": mapped.id})
         serialized_lines = []
         for line in lines:
             item = serialized_line(line)
-            candidates = mapped_ids.get(str(line.product_id), set())
-            item["mapping_target"] = mapping_targets.get(str(line.product_id)) if len(candidates) == 1 else None
+            candidates = mapped_ids.get(ident(line.product_id), set())
+            item["mapping_target"] = mapping_targets.get(ident(line.product_id)) if len(candidates) == 1 else None
             supplier_id = line.supplier_product_id or (next(iter(candidates)) if len(candidates) == 1 else None)
             item["supplier_product_url"] = (
                 f"https://www.aliexpress.com/item/{supplier_id}.html"
